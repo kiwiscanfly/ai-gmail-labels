@@ -32,67 +32,15 @@ from src.core.exceptions import (
     InvalidCredentialsError,
     RetryableError
 )
+from src.core.email_storage import get_email_storage
+from src.models.email import EmailMessage, EmailReference, EmailContent
+from src.models.gmail import GmailLabel, BatchOperation
+from src.models.common import Status
 
 logger = structlog.get_logger(__name__)
 
 
-@dataclass
-class EmailMessage:
-    """Represents a Gmail message."""
-    id: str
-    thread_id: str
-    label_ids: List[str] = field(default_factory=list)
-    snippet: str = ""
-    history_id: str = ""
-    internal_date: int = 0
-    size_estimate: int = 0
-    
-    # Headers
-    subject: str = ""
-    sender: str = ""
-    recipient: str = ""
-    date: str = ""
-    
-    # Content
-    body_text: str = ""
-    body_html: str = ""
-    attachments: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Metadata
-    received_at: Optional[datetime] = None
-    processed_at: Optional[datetime] = None
-    
-    def __post_init__(self):
-        if self.internal_date and not self.received_at:
-            self.received_at = datetime.fromtimestamp(self.internal_date / 1000)
-
-
-@dataclass
-class GmailLabel:
-    """Represents a Gmail label."""
-    id: str
-    name: str
-    message_list_visibility: str = "show"
-    label_list_visibility: str = "labelShow"
-    type: str = "user"
-    messages_total: int = 0
-    messages_unread: int = 0
-    threads_total: int = 0
-    threads_unread: int = 0
-    color: Optional[Dict[str, str]] = None
-
-
-@dataclass
-class BatchOperation:
-    """Represents a batch operation."""
-    operation_id: str
-    operation_type: str  # modify_labels, delete, etc.
-    message_ids: List[str]
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    status: str = "pending"  # pending, processing, completed, failed
-    created_at: float = field(default_factory=time.time)
-    completed_at: Optional[float] = None
-    error: Optional[str] = None
+# EmailMessage, GmailLabel, and BatchOperation are now imported from src.models
 
 
 class RateLimiter:
@@ -146,12 +94,14 @@ class GmailClient:
         self.labels_cache: Dict[str, GmailLabel] = {}
         self.watch_response: Optional[Dict[str, Any]] = None
         self._batch_operations: Dict[str, BatchOperation] = {}
+        self._email_storage: Optional[Any] = None  # Lazy loaded
         
     async def initialize(self) -> None:
         """Initialize the Gmail client with authentication."""
         try:
             await self._authenticate()
             await self._refresh_labels_cache()
+            self._email_storage = await get_email_storage()
             logger.info("Gmail client initialized successfully")
         except Exception as e:
             logger.error("Failed to initialize Gmail client", error=str(e))
@@ -441,17 +391,24 @@ class GmailClient:
             logger.error("Failed to list messages", error=str(e))
             raise GmailAPIError(f"Failed to list messages: {e}")
     
-    async def get_message(self, message_id: str, format: str = "full") -> EmailMessage:
-        """Get a Gmail message by ID.
+    async def get_message(self, message_id: str, format: str = "full", use_storage: bool = True) -> EmailMessage:
+        """Get a Gmail message by ID with optional storage optimization.
         
         Args:
             message_id: The message ID.
             format: Message format (minimal, full, raw, metadata).
+            use_storage: Whether to use optimized storage for large emails.
             
         Returns:
             EmailMessage object.
         """
         try:
+            # Try to get from storage first if enabled
+            if use_storage and self._email_storage and format == "full":
+                stored_message = await self._get_message_from_storage(message_id)
+                if stored_message:
+                    return stored_message
+            
             response = await self._api_request(
                 self.service.users().messages().get,
                 quota_cost=5,
@@ -462,6 +419,11 @@ class GmailClient:
             
             # Parse message
             message = self._parse_message(response)
+            
+            # Store in optimized storage if enabled and message is large
+            if (use_storage and self._email_storage and format == "full" and 
+                message.size_estimate > 50000):  # 50KB threshold
+                await self._store_message_optimized(message)
             
             logger.debug("Message retrieved", message_id=message_id, subject=message.subject[:50])
             return message
@@ -807,6 +769,80 @@ class GmailClient:
             if not page_token:
                 break
     
+    async def _get_message_from_storage(self, message_id: str) -> Optional[EmailMessage]:
+        """Get message from optimized storage."""
+        try:
+            if not self._email_storage:
+                return None
+            
+            # Get reference
+            reference = await self._email_storage.get_email_reference(message_id)
+            if not reference:
+                return None
+            
+            # Create lightweight message from reference
+            message = EmailMessage(
+                id=reference.email_id,
+                thread_id=reference.thread_id,
+                label_ids=reference.labels,
+                subject=reference.subject,
+                sender=reference.sender,
+                recipient=reference.recipient,
+                date=reference.date,
+                size_estimate=reference.size_estimate
+            )
+            
+            # Load content on demand (lazy loading)
+            content = await self._email_storage.load_email_content(message_id)
+            if content:
+                message.body_text = content.body_text
+                message.body_html = content.body_html
+                message.attachments = content.attachments
+            
+            return message
+            
+        except Exception as e:
+            logger.error("Failed to get message from storage", message_id=message_id, error=str(e))
+            return None
+    
+    async def _store_message_optimized(self, message: EmailMessage) -> None:
+        """Store message in optimized storage."""
+        try:
+            if not self._email_storage:
+                return
+            
+            # Create reference
+            reference = EmailReference(
+                email_id=message.id,
+                thread_id=message.thread_id,
+                subject=message.subject,
+                sender=message.sender,
+                recipient=message.recipient,
+                date=message.date,
+                labels=message.label_ids,
+                size_estimate=message.size_estimate
+            )
+            
+            # Create content
+            content = EmailContent(
+                email_id=message.id,
+                body_text=message.body_text,
+                body_html=message.body_html,
+                attachments=message.attachments
+            )
+            
+            # Store content and get storage path
+            storage_path = await self._email_storage.store_email_content(message.id, content)
+            reference.storage_path = storage_path
+            
+            # Store reference
+            await self._email_storage.store_email_reference(reference)
+            
+            logger.debug("Message stored optimized", message_id=message.id, size=message.size_estimate)
+            
+        except Exception as e:
+            logger.error("Failed to store message optimized", message_id=message.id, error=str(e))
+    
     async def get_health_status(self) -> Dict[str, Any]:
         """Get Gmail client health status.
         
@@ -820,6 +856,11 @@ class GmailClient:
             # Get quota info
             labels = await self.list_labels()
             
+            # Get storage stats if available
+            storage_stats = {}
+            if self._email_storage:
+                storage_stats = await self._email_storage.get_storage_stats()
+            
             return {
                 "status": "healthy",
                 "authenticated": True,
@@ -828,7 +869,8 @@ class GmailClient:
                 "total_threads": profile.get('threadsTotal', 0),
                 "labels_count": len(labels),
                 "watch_active": bool(self.watch_response),
-                "credentials_valid": self.credentials.valid if self.credentials else False
+                "credentials_valid": self.credentials.valid if self.credentials else False,
+                "storage": storage_stats
             }
             
         except Exception as e:

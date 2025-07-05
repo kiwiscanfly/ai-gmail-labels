@@ -47,6 +47,16 @@ class StateError(EmailAgentException):
     pass
 
 
+class StorageError(EmailAgentException):
+    """Raised when storage operations fail."""
+    pass
+
+
+class ServiceError(EmailAgentException):
+    """Raised when service operations fail."""
+    pass
+
+
 class AgentError(EmailAgentException):
     """Raised when agent operations fail."""
     pass
@@ -74,6 +84,11 @@ class SecurityError(EmailAgentException):
 
 class ValidationError(EmailAgentException):
     """Raised when data validation fails."""
+    pass
+
+
+class TransactionError(DatabaseError):
+    """Raised when transaction operations fail."""
     pass
 
 

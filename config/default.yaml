@@ -59,6 +59,7 @@ performance:
   enable_monitoring: true
   metrics_retention_days: 7
   health_check_interval: 30  # seconds
+  email_cache_size_mb: 100  # Maximum memory for email content cache
 
 security:
   encrypt_state: false

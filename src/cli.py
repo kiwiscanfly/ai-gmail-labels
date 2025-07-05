@@ -12,10 +12,12 @@ from rich import print as rprint
 
 from src.core.config import get_config, reload_config
 from src.core.exceptions import ConfigurationError
-from src.core.event_bus import get_event_bus, AgentMessage
-from src.core.state_manager import get_state_manager, WorkflowCheckpoint
+from src.core.event_bus import get_event_bus
+from src.core.state_manager import get_state_manager
+from src.core.error_recovery import get_error_recovery_manager
 from src.integrations.ollama_client import get_ollama_manager
 from src.integrations.gmail_client import get_gmail_client
+from src.models.agent import AgentMessage, WorkflowCheckpoint
 
 
 app = typer.Typer(help="Email Categorization Agent CLI")
@@ -194,6 +196,14 @@ async def _status():
                 table.add_row("Gmail", "❌ Unhealthy", health.get("error", "Unknown")[:50])
         except Exception as e:
             table.add_row("Gmail", "❌ Error", str(e)[:50])
+        
+        # Test Error Recovery Manager
+        try:
+            error_manager = await get_error_recovery_manager()
+            stats = await error_manager.get_error_statistics()
+            table.add_row("Error Recovery", "✅ Ready", f"Unresolved: {stats.get('unresolved_errors', 0)}")
+        except Exception as e:
+            table.add_row("Error Recovery", "❌ Error", str(e)[:50])
         
         console.print(table)
         
@@ -559,6 +569,90 @@ def gmail(
 ):
     """Manage Gmail operations."""
     asyncio.run(_manage_gmail(action, query, limit))
+
+@app.command()
+def test_error_recovery():
+    """Test error recovery system."""
+    asyncio.run(_test_error_recovery())
+
+async def _test_error_recovery():
+    """Test error recovery functionality."""
+    console.print("[blue]Testing error recovery system...[/blue]")
+    
+    try:
+        # Initialize error recovery manager
+        console.print("\n[yellow]Initializing Error Recovery Manager:[/yellow]")
+        error_manager = await get_error_recovery_manager()
+        console.print("✅ Error recovery manager initialized")
+        
+        # Test protected operation with simulated errors
+        console.print("\n[yellow]Testing Protected Operations:[/yellow]")
+        
+        # Test 1: Successful operation
+        async def successful_operation():
+            await asyncio.sleep(0.1)
+            return "success"
+        
+        async with error_manager.protected_operation("test_success", "test_component"):
+            result = await successful_operation()
+            console.print(f"✅ Successful operation result: {result}")
+        
+        # Test 2: Retryable error that eventually succeeds
+        attempt_count = 0
+        async def eventually_successful_operation():
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count < 3:
+                from src.core.exceptions import TemporaryDatabaseError
+                raise TemporaryDatabaseError(f"Simulated failure attempt {attempt_count}")
+            return "success after retries"
+        
+        try:
+            attempt_count = 0  # Reset counter
+            async with error_manager.protected_operation(
+                "test_retry", "test_component", max_retries=5
+            ):
+                result = await eventually_successful_operation()
+                console.print(f"✅ Retry operation result: {result}")
+        except Exception as e:
+            console.print(f"❌ Retry operation failed: {e}")
+        
+        # Test 3: Circuit breaker
+        console.print("\n[yellow]Testing Circuit Breaker:[/yellow]")
+        circuit_breaker = error_manager.get_circuit_breaker("test_service")
+        
+        async def failing_operation():
+            from src.core.exceptions import TemporaryDatabaseError
+            raise TemporaryDatabaseError("Simulated service failure")
+        
+        # Trigger circuit breaker by causing multiple failures
+        for i in range(6):  # More than threshold
+            try:
+                await circuit_breaker.call(failing_operation)
+            except Exception:
+                pass
+        
+        console.print(f"ℹ️ Circuit breaker state: {circuit_breaker.state}")
+        console.print(f"ℹ️ Failure count: {circuit_breaker.failure_count}")
+        
+        # Test error statistics
+        console.print("\n[yellow]Error Statistics:[/yellow]")
+        stats = await error_manager.get_error_statistics()
+        console.print(f"📊 Recent errors: {len(stats.get('recent_errors', []))}")
+        console.print(f"⚠️ Unresolved errors: {stats.get('unresolved_errors', 0)}")
+        console.print(f"🔄 Circuit breakers: {len(stats.get('circuit_breakers', {}))}")
+        
+        # Show circuit breaker states
+        for name, state in stats.get('circuit_breakers', {}).items():
+            console.print(f"   🔌 {name}: {state['state']} (failures: {state['failure_count']})")
+        
+        console.print("\n[green]✅ All error recovery tests completed![/green]")
+        
+    except Exception as e:
+        console.print(f"\n[red]❌ Error recovery test failed: {e}[/red]")
+        import traceback
+        console.print(f"[red]Details: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
 
 async def _manage_gmail(action: str, query: Optional[str], limit: int):
     """Manage Gmail operations implementation."""

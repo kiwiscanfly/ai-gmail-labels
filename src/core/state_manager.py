@@ -1,51 +1,22 @@
 """SQLite-based state management for the email categorization agent."""
 
-import aiosqlite
 import json
 import asyncio
-import uuid
 import time
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timedelta
-from dataclasses import dataclass
 from pathlib import Path
 import structlog
 
 from src.core.config import get_config
 from src.core.exceptions import DatabaseError, StateError
+from src.core.database_pool import get_database_pool
+from src.models.agent import WorkflowCheckpoint, UserInteraction
 
 logger = structlog.get_logger(__name__)
 
 
-@dataclass
-class WorkflowCheckpoint:
-    """Workflow checkpoint for state persistence."""
-    workflow_id: str
-    workflow_type: str
-    state_data: Dict[str, Any]
-    status: str = "in_progress"
-    error_message: Optional[str] = None
-    checkpoint_time: float = 0.0
-    
-    def __post_init__(self):
-        if self.checkpoint_time == 0.0:
-            self.checkpoint_time = time.time()
-
-
-@dataclass
-class UserInteraction:
-    """User interaction state."""
-    interaction_id: str
-    email_id: str
-    interaction_type: str
-    data: Dict[str, Any]
-    status: str = "pending"
-    created_at: float = 0.0
-    expires_at: Optional[float] = None
-    
-    def __post_init__(self):
-        if self.created_at == 0.0:
-            self.created_at = time.time()
+# WorkflowCheckpoint and UserInteraction are now imported from src.models.agent
 
 
 class SQLiteStateManager:
@@ -69,13 +40,11 @@ class SQLiteStateManager:
             # Ensure database directory exists
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
-            async with aiosqlite.connect(self.db_path) as db:
-                # Enable WAL mode for better concurrency
-                await db.execute("PRAGMA journal_mode=WAL")
-                await db.execute("PRAGMA busy_timeout=30000")
-                
-                # Workflow state table
-                await db.execute("""
+            pool = await get_database_pool()
+            
+            # Create schema using transaction
+            operations = [
+                ("""
                     CREATE TABLE IF NOT EXISTS workflow_state (
                         workflow_id TEXT PRIMARY KEY,
                         workflow_type TEXT NOT NULL,
@@ -86,19 +55,15 @@ class SQLiteStateManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                
-                # User preferences table
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE TABLE IF NOT EXISTS user_preferences (
                         key TEXT PRIMARY KEY,
                         value TEXT NOT NULL,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                
-                # User interactions table
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE TABLE IF NOT EXISTS user_interactions (
                         interaction_id TEXT PRIMARY KEY,
                         email_id TEXT NOT NULL,
@@ -109,10 +74,8 @@ class SQLiteStateManager:
                         expires_at REAL,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                
-                # Categorization feedback table
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE TABLE IF NOT EXISTS categorization_feedback (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         email_id TEXT NOT NULL,
@@ -123,10 +86,8 @@ class SQLiteStateManager:
                         timestamp REAL NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                
-                # Email processing queue table
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE TABLE IF NOT EXISTS email_queue (
                         email_id TEXT PRIMARY KEY,
                         status TEXT NOT NULL DEFAULT 'pending',
@@ -137,10 +98,8 @@ class SQLiteStateManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                
-                # Email metadata cache table
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE TABLE IF NOT EXISTS email_metadata (
                         email_id TEXT PRIMARY KEY,
                         subject TEXT,
@@ -155,35 +114,30 @@ class SQLiteStateManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                
-                # Create indexes for performance
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE INDEX IF NOT EXISTS idx_workflow_status 
                     ON workflow_state(status, workflow_type)
-                """)
-                
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE INDEX IF NOT EXISTS idx_email_queue_status_priority 
                     ON email_queue(status, priority DESC, created_at ASC)
-                """)
-                
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE INDEX IF NOT EXISTS idx_feedback_email 
                     ON categorization_feedback(email_id)
-                """)
-                
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE INDEX IF NOT EXISTS idx_interactions_status_expires 
                     ON user_interactions(status, expires_at)
-                """)
-                
-                await db.execute("""
+                """, None),
+                ("""
                     CREATE INDEX IF NOT EXISTS idx_email_metadata_received 
                     ON email_metadata(received_at DESC)
-                """)
-                
-                await db.commit()
+                """, None)
+            ]
+            
+            await pool.execute_transaction(operations)
                 
             # Start cleanup task
             self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -213,20 +167,19 @@ class SQLiteStateManager:
             checkpoint: The checkpoint to save.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT OR REPLACE INTO workflow_state
-                    (workflow_id, workflow_type, state_data, checkpoint_time, status, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    checkpoint.workflow_id,
-                    checkpoint.workflow_type,
-                    json.dumps(checkpoint.state_data),
-                    checkpoint.checkpoint_time,
-                    checkpoint.status,
-                    checkpoint.error_message
-                ))
-                await db.commit()
+            pool = await get_database_pool()
+            await pool.execute_query("""
+                INSERT OR REPLACE INTO workflow_state
+                (workflow_id, workflow_type, state_data, checkpoint_time, status, error_message)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                checkpoint.workflow_id,
+                checkpoint.workflow_type,
+                json.dumps(checkpoint.state_data),
+                checkpoint.checkpoint_time,
+                checkpoint.status,
+                checkpoint.error_message
+            ))
                 
             logger.debug("Checkpoint saved", workflow_id=checkpoint.workflow_id)
             
@@ -244,24 +197,22 @@ class SQLiteStateManager:
             The checkpoint if found, None otherwise.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                
-                async with db.execute("""
-                    SELECT * FROM workflow_state WHERE workflow_id = ?
-                """, (workflow_id,)) as cursor:
-                    row = await cursor.fetchone()
-                
-                if row:
-                    return WorkflowCheckpoint(
-                        workflow_id=row['workflow_id'],
-                        workflow_type=row['workflow_type'],
-                        state_data=json.loads(row['state_data']),
-                        status=row['status'],
-                        error_message=row['error_message'],
-                        checkpoint_time=row['checkpoint_time']
-                    )
-                return None
+            pool = await get_database_pool()
+            row = await pool.execute_query("""
+                SELECT workflow_id, workflow_type, state_data, checkpoint_time, status, error_message, created_at, updated_at
+                FROM workflow_state WHERE workflow_id = ?
+            """, (workflow_id,), fetch_one=True)
+            
+            if row:
+                return WorkflowCheckpoint(
+                    workflow_id=row[0],
+                    workflow_type=row[1],
+                    state_data=json.loads(row[2]),
+                    checkpoint_time=row[3],
+                    status=row[4],
+                    error_message=row[5]
+                )
+            return None
                 
         except Exception as e:
             logger.error("Failed to load checkpoint", workflow_id=workflow_id, error=str(e))
@@ -284,39 +235,37 @@ class SQLiteStateManager:
             List of checkpoints.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                
-                query = "SELECT * FROM workflow_state WHERE 1=1"
-                params = []
-                
-                if workflow_type:
-                    query += " AND workflow_type = ?"
-                    params.append(workflow_type)
-                
-                if status:
-                    query += " AND status = ?"
-                    params.append(status)
-                
-                query += " ORDER BY checkpoint_time DESC LIMIT ?"
-                params.append(limit)
-                
-                async with db.execute(query, params) as cursor:
-                    rows = await cursor.fetchall()
-                
-                checkpoints = []
-                for row in rows:
-                    checkpoint = WorkflowCheckpoint(
-                        workflow_id=row['workflow_id'],
-                        workflow_type=row['workflow_type'],
-                        state_data=json.loads(row['state_data']),
-                        status=row['status'],
-                        error_message=row['error_message'],
-                        checkpoint_time=row['checkpoint_time']
-                    )
-                    checkpoints.append(checkpoint)
-                
-                return checkpoints
+            pool = await get_database_pool()
+            
+            query = "SELECT workflow_id, workflow_type, state_data, checkpoint_time, status, error_message, created_at, updated_at FROM workflow_state WHERE 1=1"
+            params = []
+            
+            if workflow_type:
+                query += " AND workflow_type = ?"
+                params.append(workflow_type)
+            
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            
+            query += " ORDER BY checkpoint_time DESC LIMIT ?"
+            params.append(limit)
+            
+            rows = await pool.execute_query(query, params, fetch_all=True)
+            
+            checkpoints = []
+            for row in rows:
+                checkpoint = WorkflowCheckpoint(
+                    workflow_id=row[0],
+                    workflow_type=row[1],
+                    state_data=json.loads(row[2]),
+                    checkpoint_time=row[3],
+                    status=row[4],
+                    error_message=row[5]
+                )
+                checkpoints.append(checkpoint)
+            
+            return checkpoints
                 
         except Exception as e:
             logger.error("Failed to list checkpoints", error=str(e))
@@ -332,12 +281,11 @@ class SQLiteStateManager:
             value: The preference value.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT OR REPLACE INTO user_preferences (key, value)
-                    VALUES (?, ?)
-                """, (key, json.dumps(value)))
-                await db.commit()
+            pool = await get_database_pool()
+            await pool.execute_query("""
+                INSERT OR REPLACE INTO user_preferences (key, value)
+                VALUES (?, ?)
+            """, (key, json.dumps(value)))
                 
             logger.debug("Preference set", key=key)
             
@@ -356,15 +304,14 @@ class SQLiteStateManager:
             The preference value or default.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("""
-                    SELECT value FROM user_preferences WHERE key = ?
-                """, (key,)) as cursor:
-                    row = await cursor.fetchone()
-                
-                if row:
-                    return json.loads(row[0])
-                return default
+            pool = await get_database_pool()
+            row = await pool.execute_query("""
+                SELECT value FROM user_preferences WHERE key = ?
+            """, (key,), fetch_one=True)
+            
+            if row:
+                return json.loads(row[0])
+            return default
                 
         except Exception as e:
             logger.error("Failed to get preference", key=key, error=str(e))
@@ -379,21 +326,20 @@ class SQLiteStateManager:
             interaction: The interaction to store.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT OR REPLACE INTO user_interactions 
-                    (interaction_id, email_id, interaction_type, data, status, created_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    interaction.interaction_id,
-                    interaction.email_id,
-                    interaction.interaction_type,
-                    json.dumps(interaction.data),
-                    interaction.status,
-                    interaction.created_at,
-                    interaction.expires_at
-                ))
-                await db.commit()
+            pool = await get_database_pool()
+            await pool.execute_query("""
+                INSERT OR REPLACE INTO user_interactions 
+                (interaction_id, email_id, interaction_type, data, status, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                interaction.interaction_id,
+                interaction.email_id,
+                interaction.interaction_type,
+                json.dumps(interaction.data),
+                interaction.status,
+                interaction.created_at,
+                interaction.expires_at
+            ))
                 
             logger.debug("Interaction stored", interaction_id=interaction.interaction_id)
             
@@ -411,25 +357,23 @@ class SQLiteStateManager:
             The interaction if found, None otherwise.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                
-                async with db.execute("""
-                    SELECT * FROM user_interactions WHERE interaction_id = ?
-                """, (interaction_id,)) as cursor:
-                    row = await cursor.fetchone()
-                
-                if row:
-                    return UserInteraction(
-                        interaction_id=row['interaction_id'],
-                        email_id=row['email_id'],
-                        interaction_type=row['interaction_type'],
-                        data=json.loads(row['data']),
-                        status=row['status'],
-                        created_at=row['created_at'],
-                        expires_at=row['expires_at']
-                    )
-                return None
+            pool = await get_database_pool()
+            row = await pool.execute_query("""
+                SELECT interaction_id, email_id, interaction_type, data, status, created_at, expires_at, updated_at
+                FROM user_interactions WHERE interaction_id = ?
+            """, (interaction_id,), fetch_one=True)
+            
+            if row:
+                return UserInteraction(
+                    interaction_id=row[0],
+                    email_id=row[1],
+                    interaction_type=row[2],
+                    data=json.loads(row[3]),
+                    status=row[4],
+                    created_at=row[5],
+                    expires_at=row[6]
+                )
+            return None
                 
         except Exception as e:
             logger.error("Failed to get interaction", interaction_id=interaction_id, error=str(e))
@@ -451,13 +395,12 @@ class SQLiteStateManager:
             metadata: Optional metadata.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT OR IGNORE INTO email_queue 
-                    (email_id, priority, metadata)
-                    VALUES (?, ?, ?)
-                """, (email_id, priority, json.dumps(metadata or {})))
-                await db.commit()
+            pool = await get_database_pool()
+            await pool.execute_query("""
+                INSERT OR IGNORE INTO email_queue 
+                (email_id, priority, metadata)
+                VALUES (?, ?, ?)
+            """, (email_id, priority, json.dumps(metadata or {})))
                 
             logger.debug("Email added to queue", email_id=email_id, priority=priority)
             
@@ -472,31 +415,29 @@ class SQLiteStateManager:
             The next email ID to process, or None if queue is empty.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
+            pool = await get_database_pool()
+            
+            # Get the next email from queue
+            row = await pool.execute_query("""
+                SELECT email_id FROM email_queue 
+                WHERE status = 'pending'
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+            """, fetch_one=True)
+            
+            if row:
+                email_id = row[0]
                 
-                async with db.execute("""
-                    SELECT email_id FROM email_queue 
-                    WHERE status = 'pending'
-                    ORDER BY priority ASC, created_at ASC
-                    LIMIT 1
-                """) as cursor:
-                    row = await cursor.fetchone()
+                # Update status to processing
+                await pool.execute_query("""
+                    UPDATE email_queue 
+                    SET status = 'processing', updated_at = CURRENT_TIMESTAMP
+                    WHERE email_id = ?
+                """, (email_id,))
                 
-                if row:
-                    email_id = row['email_id']
-                    
-                    # Update status to processing
-                    await db.execute("""
-                        UPDATE email_queue 
-                        SET status = 'processing', updated_at = CURRENT_TIMESTAMP
-                        WHERE email_id = ?
-                    """, (email_id,))
-                    await db.commit()
-                    
-                    return email_id
-                
-                return None
+                return email_id
+            
+            return None
                 
         except Exception as e:
             logger.error("Failed to get next from queue", error=str(e))
@@ -509,13 +450,12 @@ class SQLiteStateManager:
             email_id: The email ID to mark as completed.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    UPDATE email_queue 
-                    SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE email_id = ?
-                """, (email_id,))
-                await db.commit()
+            pool = await get_database_pool()
+            await pool.execute_query("""
+                UPDATE email_queue 
+                SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                WHERE email_id = ?
+            """, (email_id,))
                 
             logger.debug("Queue item completed", email_id=email_id)
             
@@ -542,20 +482,19 @@ class SQLiteStateManager:
             feedback_type: Type of feedback.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT INTO categorization_feedback 
-                    (email_id, suggested_label, correct_label, confidence_score, feedback_type, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    email_id,
-                    suggested_label,
-                    correct_label,
-                    confidence_score,
-                    feedback_type,
-                    time.time()
-                ))
-                await db.commit()
+            pool = await get_database_pool()
+            await pool.execute_query("""
+                INSERT INTO categorization_feedback 
+                (email_id, suggested_label, correct_label, confidence_score, feedback_type, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                email_id,
+                suggested_label,
+                correct_label,
+                confidence_score,
+                feedback_type,
+                time.time()
+            ))
                 
             logger.debug("Feedback recorded", email_id=email_id, feedback_type=feedback_type)
             
@@ -572,57 +511,53 @@ class SQLiteStateManager:
             Dictionary with categorization statistics.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                
-                # Overall accuracy
-                async with db.execute("""
-                    SELECT 
-                        COUNT(*) as total,
-                        SUM(CASE WHEN suggested_label = correct_label THEN 1 ELSE 0 END) as correct,
-                        AVG(confidence_score) as avg_confidence
-                    FROM categorization_feedback
-                    WHERE feedback_type = 'correction'
-                """) as cursor:
-                    stats = await cursor.fetchone()
-                
-                # Label accuracy
-                async with db.execute("""
-                    SELECT 
-                        suggested_label,
-                        COUNT(*) as count,
-                        SUM(CASE WHEN suggested_label = correct_label THEN 1 ELSE 0 END) as correct
-                    FROM categorization_feedback
-                    WHERE feedback_type = 'correction'
-                    GROUP BY suggested_label
-                    ORDER BY count DESC
-                """) as cursor:
-                    label_stats = await cursor.fetchall()
-                
-                # Queue stats
-                async with db.execute("""
-                    SELECT 
-                        status,
-                        COUNT(*) as count
-                    FROM email_queue
-                    GROUP BY status
-                """) as cursor:
-                    queue_stats = await cursor.fetchall()
-                
-                return {
-                    "overall_accuracy": stats['correct'] / stats['total'] if stats['total'] > 0 else 0,
-                    "total_processed": stats['total'],
-                    "average_confidence": stats['avg_confidence'] or 0,
-                    "label_accuracy": [
-                        {
-                            'label': row['suggested_label'],
-                            'accuracy': row['correct'] / row['count'] if row['count'] > 0 else 0,
-                            'count': row['count']
-                        }
-                        for row in label_stats
-                    ],
-                    "queue_status": {row['status']: row['count'] for row in queue_stats}
-                }
+            pool = await get_database_pool()
+            
+            # Overall accuracy
+            stats = await pool.execute_query("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN suggested_label = correct_label THEN 1 ELSE 0 END) as correct,
+                    AVG(confidence_score) as avg_confidence
+                FROM categorization_feedback
+                WHERE feedback_type = 'correction'
+            """, fetch_one=True)
+            
+            # Label accuracy
+            label_stats = await pool.execute_query("""
+                SELECT 
+                    suggested_label,
+                    COUNT(*) as count,
+                    SUM(CASE WHEN suggested_label = correct_label THEN 1 ELSE 0 END) as correct
+                FROM categorization_feedback
+                WHERE feedback_type = 'correction'
+                GROUP BY suggested_label
+                ORDER BY count DESC
+            """, fetch_all=True)
+            
+            # Queue stats
+            queue_stats = await pool.execute_query("""
+                SELECT 
+                    status,
+                    COUNT(*) as count
+                FROM email_queue
+                GROUP BY status
+            """, fetch_all=True)
+            
+            return {
+                "overall_accuracy": stats[1] / stats[0] if stats[0] > 0 else 0,
+                "total_processed": stats[0],
+                "average_confidence": stats[2] or 0,
+                "label_accuracy": [
+                    {
+                        'label': row[0],
+                        'accuracy': row[2] / row[1] if row[1] > 0 else 0,
+                        'count': row[1]
+                    }
+                    for row in label_stats
+                ],
+                "queue_status": {row[0]: row[1] for row in queue_stats}
+            }
                 
         except Exception as e:
             logger.error("Failed to get categorization stats", error=str(e))
@@ -648,43 +583,36 @@ class SQLiteStateManager:
             Dictionary with cleanup counts.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                deleted_counts = {}
-                
-                # Clean up completed workflows
-                cursor = await db.execute("""
+            pool = await get_database_pool()
+            
+            # Use transaction for all cleanup operations
+            operations = [
+                ("""
                     DELETE FROM workflow_state 
                     WHERE status IN ('completed', 'failed')
                     AND created_at < datetime('now', '-' || ? || ' days')
-                """, (self.max_history_days,))
-                deleted_counts['workflows'] = cursor.rowcount
-                
-                # Clean up expired interactions
-                cursor = await db.execute("""
+                """, (self.max_history_days,)),
+                ("""
                     DELETE FROM user_interactions 
                     WHERE expires_at < ? AND expires_at IS NOT NULL
-                """, (time.time(),))
-                deleted_counts['interactions'] = cursor.rowcount
-                
-                # Clean up old completed queue items
-                cursor = await db.execute("""
+                """, (time.time(),)),
+                ("""
                     DELETE FROM email_queue 
                     WHERE status = 'completed'
                     AND updated_at < datetime('now', '-7 days')
-                """)
-                deleted_counts['queue_items'] = cursor.rowcount
-                
-                # Clean up old feedback (keep for longer)
-                cursor = await db.execute("""
+                """, None),
+                ("""
                     DELETE FROM categorization_feedback 
                     WHERE created_at < datetime('now', '-90 days')
-                """)
-                deleted_counts['feedback'] = cursor.rowcount
-                
-                await db.commit()
-                
-                logger.info("Cleanup completed", deleted_counts=deleted_counts)
-                return deleted_counts
+                """, None)
+            ]
+            
+            await pool.execute_transaction(operations)
+            
+            # Note: We can't get rowcount easily with the connection pool
+            # so we'll just log success
+            logger.info("Cleanup completed")
+            return {"status": "completed"}
                 
         except Exception as e:
             logger.error("Failed to cleanup old data", error=str(e))

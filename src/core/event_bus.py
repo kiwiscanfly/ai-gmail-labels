@@ -1,57 +1,21 @@
 """SQLite-based event bus for inter-agent communication."""
 
-import aiosqlite
 import json
 import asyncio
-import uuid
-import time
 from typing import Dict, List, Callable, Optional, Any
 from datetime import datetime
-from dataclasses import dataclass, field
 from collections import defaultdict
 import structlog
 
 from src.core.config import get_config
 from src.core.exceptions import DatabaseError, StateError
+from src.core.database_pool import get_database_pool
+from src.models.agent import AgentMessage
 
 logger = structlog.get_logger(__name__)
 
 
-@dataclass
-class AgentMessage:
-    """Message passed between agents."""
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    sender_agent: str = ""
-    recipient_agent: str = ""
-    message_type: str = ""
-    payload: Dict[str, Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=time.time)
-    correlation_id: Optional[str] = None
-    status: str = "pending"  # pending, processing, completed, failed
-    priority: int = 5  # 1-10, lower is higher priority
-    retry_count: int = 0
-    max_retries: int = 3
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert message to dictionary for JSON serialization."""
-        return {
-            "id": self.id,
-            "sender_agent": self.sender_agent,
-            "recipient_agent": self.recipient_agent,
-            "message_type": self.message_type,
-            "payload": self.payload,
-            "timestamp": self.timestamp,
-            "correlation_id": self.correlation_id,
-            "status": self.status,
-            "priority": self.priority,
-            "retry_count": self.retry_count,
-            "max_retries": self.max_retries
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AgentMessage":
-        """Create message from dictionary."""
-        return cls(**data)
+# AgentMessage is now imported from src.models.agent
 
 
 class SQLiteEventBus:
@@ -73,52 +37,47 @@ class SQLiteEventBus:
     async def initialize(self) -> None:
         """Initialize the event bus database schema."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Enable WAL mode for better concurrency
-                await db.execute("PRAGMA journal_mode=WAL")
-                await db.execute("PRAGMA busy_timeout=30000")
+            pool = await get_database_pool()
+            
+            # Create messages table
+            await pool.execute_query("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id TEXT PRIMARY KEY,
+                    sender_agent TEXT NOT NULL,
+                    recipient_agent TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    correlation_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    priority INTEGER NOT NULL DEFAULT 5,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
                 
-                # Create messages table
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        id TEXT PRIMARY KEY,
-                        sender_agent TEXT NOT NULL,
-                        recipient_agent TEXT NOT NULL,
-                        message_type TEXT NOT NULL,
-                        payload TEXT NOT NULL,
-                        timestamp REAL NOT NULL,
-                        correlation_id TEXT,
-                        status TEXT NOT NULL DEFAULT 'pending',
-                        priority INTEGER NOT NULL DEFAULT 5,
-                        retry_count INTEGER NOT NULL DEFAULT 0,
-                        max_retries INTEGER NOT NULL DEFAULT 3,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Create indexes for performance
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_recipient_status_priority 
-                    ON messages(recipient_agent, status, priority ASC, timestamp ASC)
-                """)
-                
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_correlation 
-                    ON messages(correlation_id)
-                """)
-                
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_timestamp 
-                    ON messages(timestamp)
-                """)
-                
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_status_timestamp 
-                    ON messages(status, timestamp)
-                """)
-                
-                await db.commit()
+            # Create indexes for performance
+            await pool.execute_query("""
+                CREATE INDEX IF NOT EXISTS idx_recipient_status_priority 
+                ON messages(recipient_agent, status, priority ASC, timestamp ASC)
+            """)
+            
+            await pool.execute_query("""
+                CREATE INDEX IF NOT EXISTS idx_correlation 
+                ON messages(correlation_id)
+            """)
+            
+            await pool.execute_query("""
+                CREATE INDEX IF NOT EXISTS idx_timestamp 
+                ON messages(timestamp)
+            """)
+            
+            await pool.execute_query("""
+                CREATE INDEX IF NOT EXISTS idx_status_timestamp 
+                ON messages(status, timestamp)
+            """)
                 
             logger.info("Event bus initialized", db_path=self.db_path)
             
@@ -156,27 +115,27 @@ class SQLiteEventBus:
             message: The message to publish.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT INTO messages 
-                    (id, sender_agent, recipient_agent, message_type, 
-                     payload, timestamp, correlation_id, status, priority,
-                     retry_count, max_retries)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    message.id,
-                    message.sender_agent,
-                    message.recipient_agent,
-                    message.message_type,
-                    json.dumps(message.payload),
-                    message.timestamp,
-                    message.correlation_id,
-                    message.status,
-                    message.priority,
-                    message.retry_count,
-                    message.max_retries
-                ))
-                await db.commit()
+            pool = await get_database_pool()
+            
+            await pool.execute_query("""
+                INSERT INTO messages 
+                (id, sender_agent, recipient_agent, message_type, 
+                 payload, timestamp, correlation_id, status, priority,
+                 retry_count, max_retries)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                message.id,
+                message.sender_agent,
+                message.recipient_agent,
+                message.message_type,
+                json.dumps(message.payload),
+                message.timestamp,
+                message.correlation_id,
+                message.status,
+                message.priority,
+                message.retry_count,
+                message.max_retries
+            ))
                 
             logger.debug(
                 "Message published",
@@ -277,35 +236,33 @@ class SQLiteEventBus:
             List of pending messages.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
+            pool = await get_database_pool()
+            
+            rows = await pool.execute_query("""
+                SELECT * FROM messages 
+                WHERE recipient_agent = ? AND status = 'pending'
+                ORDER BY priority ASC, timestamp ASC
+                LIMIT ?
+            """, (agent_id, limit), fetch_all=True)
                 
-                async with db.execute("""
-                    SELECT * FROM messages 
-                    WHERE recipient_agent = ? AND status = 'pending'
-                    ORDER BY priority ASC, timestamp ASC
-                    LIMIT ?
-                """, (agent_id, limit)) as cursor:
-                    rows = await cursor.fetchall()
-                
-                messages = []
-                for row in rows:
-                    message = AgentMessage(
-                        id=row['id'],
-                        sender_agent=row['sender_agent'],
-                        recipient_agent=row['recipient_agent'],
-                        message_type=row['message_type'],
-                        payload=json.loads(row['payload']),
-                        timestamp=row['timestamp'],
-                        correlation_id=row['correlation_id'],
-                        status=row['status'],
-                        priority=row['priority'],
-                        retry_count=row['retry_count'],
-                        max_retries=row['max_retries']
-                    )
-                    messages.append(message)
-                
-                return messages
+            messages = []
+            for row in rows:
+                message = AgentMessage(
+                    id=row[0],  # id
+                    sender_agent=row[1],  # sender_agent
+                    recipient_agent=row[2],  # recipient_agent
+                    message_type=row[3],  # message_type
+                    payload=json.loads(row[4]),  # payload
+                    timestamp=row[5],  # timestamp
+                    correlation_id=row[6],  # correlation_id
+                    status=row[7],  # status
+                    priority=row[8],  # priority
+                    retry_count=row[9],  # retry_count
+                    max_retries=row[10]  # max_retries
+                )
+                messages.append(message)
+            
+            return messages
                 
         except Exception as e:
             logger.error("Failed to fetch messages", agent_id=agent_id, error=str(e))
@@ -368,22 +325,21 @@ class SQLiteEventBus:
             error_message: Optional error message for failed status.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                if error_message:
-                    await db.execute("""
-                        UPDATE messages 
-                        SET status = ?, updated_at = CURRENT_TIMESTAMP,
-                            payload = json_patch(payload, json('{"error": "' || ? || '"}'))
-                        WHERE id = ?
-                    """, (status, error_message, message_id))
-                else:
-                    await db.execute("""
-                        UPDATE messages 
-                        SET status = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                    """, (status, message_id))
-                    
-                await db.commit()
+            pool = await get_database_pool()
+            
+            if error_message:
+                # For SQLite, we'll update the payload with a simple approach
+                await pool.execute_query("""
+                    UPDATE messages 
+                    SET status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (status, message_id))
+            else:
+                await pool.execute_query("""
+                    UPDATE messages 
+                    SET status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (status, message_id))
                 
         except Exception as e:
             logger.error("Failed to update message status", message_id=message_id, error=str(e))
@@ -395,15 +351,15 @@ class SQLiteEventBus:
             message: The message to retry.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    UPDATE messages 
-                    SET status = 'pending', 
-                        retry_count = retry_count + 1,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (message.id,))
-                await db.commit()
+            pool = await get_database_pool()
+            
+            await pool.execute_query("""
+                UPDATE messages 
+                SET status = 'pending', 
+                    retry_count = retry_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (message.id,))
                 
             logger.info("Message scheduled for retry", message_id=message.id, retry_count=message.retry_count + 1)
             
@@ -427,44 +383,42 @@ class SQLiteEventBus:
             List of messages matching the criteria.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                
-                query = "SELECT * FROM messages WHERE 1=1"
-                params = []
-                
-                if agent_id:
-                    query += " AND (sender_agent = ? OR recipient_agent = ?)"
-                    params.extend([agent_id, agent_id])
-                
-                if correlation_id:
-                    query += " AND correlation_id = ?"
-                    params.append(correlation_id)
-                
-                query += " ORDER BY timestamp DESC LIMIT ?"
-                params.append(limit)
-                
-                async with db.execute(query, params) as cursor:
-                    rows = await cursor.fetchall()
-                
-                messages = []
-                for row in rows:
-                    message = AgentMessage(
-                        id=row['id'],
-                        sender_agent=row['sender_agent'],
-                        recipient_agent=row['recipient_agent'],
-                        message_type=row['message_type'],
-                        payload=json.loads(row['payload']),
-                        timestamp=row['timestamp'],
-                        correlation_id=row['correlation_id'],
-                        status=row['status'],
-                        priority=row['priority'],
-                        retry_count=row['retry_count'],
-                        max_retries=row['max_retries']
-                    )
-                    messages.append(message)
-                
-                return messages
+            pool = await get_database_pool()
+            
+            query = "SELECT * FROM messages WHERE 1=1"
+            params = []
+            
+            if agent_id:
+                query += " AND (sender_agent = ? OR recipient_agent = ?)"
+                params.extend([agent_id, agent_id])
+            
+            if correlation_id:
+                query += " AND correlation_id = ?"
+                params.append(correlation_id)
+            
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
+            
+            rows = await pool.execute_query(query, params, fetch_all=True)
+            
+            messages = []
+            for row in rows:
+                message = AgentMessage(
+                    id=row[0],  # id
+                    sender_agent=row[1],  # sender_agent
+                    recipient_agent=row[2],  # recipient_agent
+                    message_type=row[3],  # message_type
+                    payload=json.loads(row[4]),  # payload
+                    timestamp=row[5],  # timestamp
+                    correlation_id=row[6],  # correlation_id
+                    status=row[7],  # status
+                    priority=row[8],  # priority
+                    retry_count=row[9],  # retry_count
+                    max_retries=row[10]  # max_retries
+                )
+                messages.append(message)
+            
+            return messages
                 
         except Exception as e:
             logger.error("Failed to get message history", error=str(e))
@@ -480,18 +434,26 @@ class SQLiteEventBus:
             Number of messages deleted.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                cursor = await db.execute("""
+            pool = await get_database_pool()
+            
+            # Get count first
+            count_result = await pool.execute_query("""
+                SELECT COUNT(*) FROM messages 
+                WHERE status IN ('completed', 'failed') 
+                AND created_at < datetime('now', '-' || ? || ' days')
+            """, (days,), fetch_one=True)
+            
+            deleted_count = count_result[0] if count_result else 0
+            
+            if deleted_count > 0:
+                await pool.execute_query("""
                     DELETE FROM messages 
                     WHERE status IN ('completed', 'failed') 
                     AND created_at < datetime('now', '-' || ? || ' days')
                 """, (days,))
-                
-                deleted_count = cursor.rowcount
-                await db.commit()
-                
-                logger.info("Cleaned up old messages", deleted_count=deleted_count, days=days)
-                return deleted_count
+            
+            logger.info("Cleaned up old messages", deleted_count=deleted_count, days=days)
+            return deleted_count
                 
         except Exception as e:
             logger.error("Failed to cleanup messages", error=str(e))
@@ -504,60 +466,56 @@ class SQLiteEventBus:
             Dictionary with statistics.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                
-                # Overall stats
-                async with db.execute("""
-                    SELECT 
-                        COUNT(*) as total_messages,
-                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                        SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
-                    FROM messages
-                """) as cursor:
-                    overall = await cursor.fetchone()
-                
-                # Recent activity (last hour)
-                async with db.execute("""
-                    SELECT COUNT(*) as recent_messages
-                    FROM messages
-                    WHERE created_at > datetime('now', '-1 hour')
-                """) as cursor:
-                    recent = await cursor.fetchone()
-                
-                # Agent activity
-                async with db.execute("""
-                    SELECT 
-                        recipient_agent,
-                        COUNT(*) as message_count,
-                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
-                    FROM messages
-                    GROUP BY recipient_agent
-                    ORDER BY message_count DESC
-                    LIMIT 10
-                """) as cursor:
-                    agents = await cursor.fetchall()
-                
-                return {
-                    "total_messages": overall["total_messages"],
-                    "pending": overall["pending"],
-                    "processing": overall["processing"],
-                    "completed": overall["completed"],
-                    "failed": overall["failed"],
-                    "recent_messages_1h": recent["recent_messages"],
-                    "active_agents": len(self.subscribers),
-                    "polling_tasks": len(self._polling_tasks),
-                    "top_agents": [
-                        {
-                            "agent": row["recipient_agent"],
-                            "total_messages": row["message_count"],
-                            "pending": row["pending_count"]
-                        }
-                        for row in agents
-                    ]
-                }
+            pool = await get_database_pool()
+            
+            # Overall stats
+            overall = await pool.execute_query("""
+                SELECT 
+                    COUNT(*) as total_messages,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+                FROM messages
+            """, fetch_one=True)
+            
+            # Recent activity (last hour)
+            recent = await pool.execute_query("""
+                SELECT COUNT(*) as recent_messages
+                FROM messages
+                WHERE created_at > datetime('now', '-1 hour')
+            """, fetch_one=True)
+            
+            # Agent activity
+            agents = await pool.execute_query("""
+                SELECT 
+                    recipient_agent,
+                    COUNT(*) as message_count,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
+                FROM messages
+                GROUP BY recipient_agent
+                ORDER BY message_count DESC
+                LIMIT 10
+            """, fetch_all=True)
+            
+            return {
+                "total_messages": overall[0] if overall else 0,
+                "pending": overall[1] if overall else 0,
+                "processing": overall[2] if overall else 0,
+                "completed": overall[3] if overall else 0,
+                "failed": overall[4] if overall else 0,
+                "recent_messages_1h": recent[0] if recent else 0,
+                "active_agents": len(self.subscribers),
+                "polling_tasks": len(self._polling_tasks),
+                "top_agents": [
+                    {
+                        "agent": row[0],  # recipient_agent
+                        "total_messages": row[1],  # message_count
+                        "pending": row[2]  # pending_count
+                    }
+                    for row in agents
+                ]
+            }
                 
         except Exception as e:
             logger.error("Failed to get stats", error=str(e))

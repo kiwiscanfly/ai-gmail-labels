@@ -3,7 +3,6 @@
 import asyncio
 import time
 from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass
 import structlog
 import ollama
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -16,43 +15,12 @@ from src.core.exceptions import (
     ModelNotFoundError,
     RetryableError
 )
+from src.models.ollama import ModelInfo, GenerationResult, ChatMessage, ModelConfig
 
 logger = structlog.get_logger(__name__)
 
 
-@dataclass
-class ModelInfo:
-    """Information about an Ollama model."""
-    name: str
-    size: int
-    digest: str
-    modified_at: str
-    loaded: bool = False
-    last_used: float = 0.0
-    
-    def __post_init__(self):
-        if self.last_used == 0.0:
-            self.last_used = time.time()
-
-
-@dataclass
-class GenerationResult:
-    """Result from model generation."""
-    content: str
-    model: str
-    total_duration: int
-    load_duration: int
-    prompt_eval_count: int
-    prompt_eval_duration: int
-    eval_count: int
-    eval_duration: int
-    
-    @property
-    def tokens_per_second(self) -> float:
-        """Calculate tokens per second."""
-        if self.eval_duration > 0:
-            return (self.eval_count * 1e9) / self.eval_duration
-        return 0.0
+# ModelInfo and GenerationResult are now imported from src.models.ollama
 
 
 class OllamaModelManager:
