@@ -1,0 +1,57 @@
+{
+  "name": "email-categorization-agent",
+  "version": "1.0.0",
+  "description": "AI-powered email categorization using local LLMs",
+  "author": "Your Name",
+  "license": "MIT",
+  "main": "src/mcp/server.py",
+  "tools": [
+    {
+      "name": "categorize_emails",
+      "description": "Categorize emails using AI agents"
+    },
+    {
+      "name": "list_uncategorized_emails",
+      "description": "List emails that need categorization"
+    },
+    {
+      "name": "get_email_details",
+      "description": "Get detailed information about an email"
+    },
+    {
+      "name": "apply_label_to_email",
+      "description": "Manually apply a label to an email"
+    },
+    {
+      "name": "get_categorization_stats",
+      "description": "Get email categorization statistics"
+    },
+    {
+      "name": "train_on_feedback",
+      "description": "Provide feedback to improve categorization"
+    },
+    {
+      "name": "manage_labels",
+      "description": "Manage Gmail labels"
+    },
+    {
+      "name": "respond_to_categorization",
+      "description": "Respond to interactive categorization requests"
+    }
+  ],
+  "resources": [
+    "categorization://status",
+    "categorization://queue",
+    "categorization://config"
+  ],
+  "capabilities": {
+    "streaming": true,
+    "stateful": true,
+    "interactive": true
+  },
+  "requirements": {
+    "python": ">=3.9",
+    "ollama": "required",
+    "gmail_api": "required"
+  }
+}
