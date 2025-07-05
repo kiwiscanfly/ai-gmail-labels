@@ -1,0 +1,67 @@
+app:
+  name: "Email Categorization Agent"
+  version: "1.0.0"
+  mode: "interactive"  # automatic | interactive
+  debug: false
+
+ollama:
+  host: "http://localhost:11434"
+  models:
+    primary: "gemma2:3b"
+    fallback: "llama3.2:3b"
+    reasoning: "llama3.2:3b"
+  timeout: 60
+  max_retries: 3
+  keep_alive: true
+
+gmail:
+  credentials_path: "./credentials.json"
+  token_path: "./token.json"
+  scopes:
+    - "https://www.googleapis.com/auth/gmail.modify"
+    - "https://www.googleapis.com/auth/gmail.labels"
+  batch_size: 50
+  rate_limit:
+    requests_per_second: 10
+    quota_per_user_per_second: 250
+
+categorization:
+  confidence_threshold: 0.75
+  max_suggestions: 3
+  enable_new_label_creation: true
+  
+sqlite:
+  database_path: "./data/agent_state.db"
+  connection_pool_size: 5
+  busy_timeout: 30000  # milliseconds
+  journal_mode: "WAL"  # Write-Ahead Logging for better concurrency
+  
+state:
+  checkpoint_interval: 60  # seconds
+  cleanup_interval: 86400  # seconds (24 hours)
+  max_history_days: 30
+
+mcp:
+  host: "localhost"
+  port: 8080
+  auth_token: null
+  cors_origins: ["*"]
+  
+logging:
+  level: "INFO"
+  format: "json"
+  output: "./logs/agent.log"
+  max_file_size: "10MB"
+  backup_count: 5
+  structured: true
+
+performance:
+  enable_monitoring: true
+  metrics_retention_days: 7
+  health_check_interval: 30  # seconds
+
+security:
+  encrypt_state: false
+  credential_storage: "keyring"  # keyring | file
+  max_login_attempts: 3
+  session_timeout: 3600  # seconds

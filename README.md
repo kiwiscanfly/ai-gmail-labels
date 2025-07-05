@@ -33,29 +33,38 @@ An AI-powered email categorization system using local LLMs and multi-agent archi
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/) (fast Python package manager)
 - [Ollama](https://ollama.ai) installed and running
 - Gmail API credentials
 - Claude Desktop (for MCP integration)
 
 ### Installation
 
-1. Clone the repository:
+1. Install uv (if not already installed):
+```bash
+# macOS and Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Or with pip
+pip install uv
+```
+
+2. Clone the repository:
 ```bash
 git clone <repository-url>
 cd email-agents
 ```
 
-2. Set up virtual environment:
+3. Set up project with uv:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+uv sync
 ```
 
-3. Install dependencies:
-```bash
-pip install -e .
-```
+This will automatically create a virtual environment and install all dependencies.
 
 4. Set up Ollama models:
 ```bash
@@ -97,11 +106,17 @@ Add to your Claude Desktop configuration:
 #### Direct Usage
 
 ```bash
+# Activate the virtual environment
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
 # Start the MCP server
-python -m src.mcp.server
+uv run python -m src.mcp.server
 
 # Or use the CLI interface
-python -m src.cli categorize --mode interactive
+uv run email-agent categorize --mode interactive
+
+# Or run directly with uv
+uv run python -m src.cli categorize --mode interactive
 ```
 
 ## Configuration
@@ -133,20 +148,27 @@ email-agents/
 ### Running Tests
 
 ```bash
-pytest tests/
+# Run tests with uv
+uv run pytest tests/
+
+# Run with coverage
+uv run pytest tests/ --cov=src --cov-report=html
 ```
 
 ### Code Quality
 
 ```bash
 # Format code
-black src/ tests/
+uv run black src/ tests/
 
 # Type checking
-mypy src/
+uv run mypy src/
 
 # Linting
-flake8 src/ tests/
+uv run flake8 src/ tests/
+
+# Run all quality checks
+uv run pre-commit run --all-files
 ```
 
 ## Contributing

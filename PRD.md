@@ -7,7 +7,7 @@ This PRD defines a Python-based agent workflow system for Gmail email categoriza
 ## 1. System Overview
 
 ### 1.1 Core Specifications
-- **Language**: Python 3.9+ with type hints throughout
+- **Language**: Python 3.13+ with type hints throughout
 - **LLM Models**: Local Ollama deployment (gemma2:3b, llama3.2:3b)
 - **Interface**: Model Context Protocol (MCP) server for integration with Claude
 - **Operation Modes**: 
@@ -1624,16 +1624,20 @@ class TestCategoryAnalysisAgent:
 
 **Local Development**
 ```bash
-# Setup
-pip install -e .
+# Setup with uv (recommended)
+uv sync
 ollama pull gemma2:3b
 ollama pull llama3.2:3b
 
 # Run MCP Server
-python -m src.mcp.server
+uv run python -m src.mcp.server
 
 # Or with uvicorn for production
-uvicorn src.mcp.server:app --host 0.0.0.0 --port 8080
+uv run uvicorn src.mcp.server:app --host 0.0.0.0 --port 8080
+
+# Alternative with pip
+pip install -e .
+python -m src.mcp.server
 ```
 
 **Claude Desktop Configuration**
