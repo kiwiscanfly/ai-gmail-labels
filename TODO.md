@@ -64,7 +64,7 @@ This TODO document outlines the action plan for implementing the Agent-Based Ema
 - [ ] Implement checkpointing for workflow persistence
 
 ### 6. Specialized Agents
-- [ ] **Email Retrieval Agent**: Monitor Gmail, fetch emails, handle pagination
+- [ ] **Email Retrieval Agent**: Fetch emails, handle pagination
 - [ ] **Category Analysis Agent**: Analyze content using Ollama, calculate confidence
 - [ ] **Gmail API Agent**: Apply labels, manage quotas, handle retries
 - [ ] **User Interaction Agent**: Handle ambiguous cases through MCP

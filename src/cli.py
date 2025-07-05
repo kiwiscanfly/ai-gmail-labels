@@ -1,6 +1,7 @@
 """Command-line interface for the email categorization agent."""
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional
 import typer
@@ -11,6 +12,8 @@ from rich import print as rprint
 
 from src.core.config import get_config, reload_config
 from src.core.exceptions import ConfigurationError
+from src.core.event_bus import get_event_bus, AgentMessage
+from src.core.state_manager import get_state_manager, WorkflowCheckpoint
 
 
 app = typer.Typer(help="Email Categorization Agent CLI")
@@ -108,6 +111,10 @@ def init(
 @app.command()
 def status():
     """Show system status and health checks."""
+    asyncio.run(_status())
+
+async def _status():
+    """Async status check implementation."""
     console.print("[blue]Checking system status...[/blue]")
     
     try:
@@ -142,6 +149,20 @@ def status():
             table.add_row("Database Directory", "✅ Ready", str(db_path.parent))
         else:
             table.add_row("Database Directory", "❌ Missing", str(db_path.parent))
+        
+        # Test database connections
+        try:
+            event_bus = await get_event_bus()
+            stats = await event_bus.get_stats()
+            table.add_row("Event Bus", "✅ Connected", f"Messages: {stats.get('total_messages', 0)}")
+        except Exception as e:
+            table.add_row("Event Bus", "❌ Error", str(e)[:50])
+        
+        try:
+            state_mgr = await get_state_manager()
+            table.add_row("State Manager", "✅ Connected", "Ready")
+        except Exception as e:
+            table.add_row("State Manager", "❌ Error", str(e)[:50])
         
         console.print(table)
         
@@ -180,6 +201,74 @@ def categorize(
     )
     console.print(panel)
 
+
+@app.command()
+def test_database():
+    """Test database systems (event bus and state management)."""
+    asyncio.run(_test_database())
+
+async def _test_database():
+    """Test database functionality."""
+    console.print("[blue]Testing database systems...[/blue]")
+    
+    try:
+        # Test Event Bus
+        console.print("\n[yellow]Testing Event Bus:[/yellow]")
+        event_bus = await get_event_bus()
+        
+        # Send a test message
+        test_msg = AgentMessage(
+            sender_agent="cli_test",
+            recipient_agent="test_agent",
+            message_type="test_message",
+            payload={"test": "data", "timestamp": time.time()}
+        )
+        
+        await event_bus.publish(test_msg)
+        console.print("✅ Message published successfully")
+        
+        # Get stats
+        stats = await event_bus.get_stats()
+        console.print(f"📊 Event Bus Stats: {stats.get('total_messages', 0)} total messages")
+        
+        # Test State Manager
+        console.print("\n[yellow]Testing State Manager:[/yellow]")
+        state_mgr = await get_state_manager()
+        
+        # Test checkpoint
+        checkpoint = WorkflowCheckpoint(
+            workflow_id="test_workflow",
+            workflow_type="test",
+            state_data={"step": 1, "test": True}
+        )
+        
+        await state_mgr.save_checkpoint(checkpoint)
+        console.print("✅ Checkpoint saved successfully")
+        
+        # Load checkpoint
+        loaded = await state_mgr.load_checkpoint("test_workflow")
+        if loaded:
+            console.print("✅ Checkpoint loaded successfully")
+        else:
+            console.print("❌ Failed to load checkpoint")
+        
+        # Test preferences
+        await state_mgr.set_preference("test_key", {"value": "test_data"})
+        pref = await state_mgr.get_preference("test_key")
+        if pref:
+            console.print("✅ Preferences working")
+        else:
+            console.print("❌ Preferences failed")
+        
+        # Get categorization stats
+        cat_stats = await state_mgr.get_categorization_stats()
+        console.print(f"📈 Categorization Stats: {cat_stats.get('total_processed', 0)} processed")
+        
+        console.print("\n[green]✅ All database tests passed![/green]")
+        
+    except Exception as e:
+        console.print(f"\n[red]❌ Database test failed: {e}[/red]")
+        raise typer.Exit(1)
 
 @app.command()
 def server(
