@@ -7,7 +7,7 @@ app:
 ollama:
   host: "http://localhost:11434"
   models:
-    primary: "gemma2:3b"
+    primary: "gemma3:4b"
     fallback: "llama3.2:3b"
     reasoning: "llama3.2:3b"
   timeout: 60

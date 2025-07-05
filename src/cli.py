@@ -14,6 +14,7 @@ from src.core.config import get_config, reload_config
 from src.core.exceptions import ConfigurationError
 from src.core.event_bus import get_event_bus, AgentMessage
 from src.core.state_manager import get_state_manager, WorkflowCheckpoint
+from src.integrations.ollama_client import get_ollama_manager
 
 
 app = typer.Typer(help="Email Categorization Agent CLI")
@@ -164,6 +165,17 @@ async def _status():
         except Exception as e:
             table.add_row("State Manager", "❌ Error", str(e)[:50])
         
+        # Test Ollama connectivity
+        try:
+            ollama_mgr = await get_ollama_manager()
+            health = await ollama_mgr.get_health_status()
+            if health["status"] == "healthy":
+                table.add_row("Ollama", "✅ Connected", f"Models: {health['total_models']}")
+            else:
+                table.add_row("Ollama", "❌ Unhealthy", health.get("error", "Unknown")[:50])
+        except Exception as e:
+            table.add_row("Ollama", "❌ Error", str(e)[:50])
+        
         console.print(table)
         
         if errors:
@@ -268,6 +280,173 @@ async def _test_database():
         
     except Exception as e:
         console.print(f"\n[red]❌ Database test failed: {e}[/red]")
+        raise typer.Exit(1)
+
+@app.command()
+def test_ollama():
+    """Test Ollama integration and model management."""
+    asyncio.run(_test_ollama())
+
+async def _test_ollama():
+    """Test Ollama functionality."""
+    console.print("[blue]Testing Ollama integration...[/blue]")
+    
+    try:
+        # Initialize Ollama manager
+        console.print("\n[yellow]Initializing Ollama Manager:[/yellow]")
+        ollama_mgr = await get_ollama_manager()
+        console.print("✅ Ollama manager initialized")
+        
+        # Get health status
+        health = await ollama_mgr.get_health_status()
+        console.print(f"🏥 Health Status: {health['status']}")
+        console.print(f"📡 Response Time: {health.get('response_time_ms', 0):.2f}ms")
+        
+        # List available models
+        console.print("\n[yellow]Available Models:[/yellow]")
+        models = await ollama_mgr.list_models()
+        if models:
+            for model in models[:5]:  # Show first 5 models
+                console.print(f"📦 {model.name} - {model.size / (1024*1024*1024):.1f}GB")
+        else:
+            console.print("❌ No models found")
+            return
+        
+        # Test model switching
+        console.print("\n[yellow]Testing Model Management:[/yellow]")
+        primary_model = await ollama_mgr.switch_model("categorization")
+        console.print(f"🔄 Switched to categorization model: {primary_model}")
+        
+        # Test simple generation
+        console.print("\n[yellow]Testing Text Generation:[/yellow]")
+        try:
+            result = await ollama_mgr.generate(
+                prompt="Categorize this email subject: 'Meeting reminder for tomorrow'",
+                options={"num_predict": 50}
+            )
+            console.print(f"✅ Generation successful")
+            console.print(f"📝 Response: {result.content[:100]}...")
+            console.print(f"⚡ Speed: {result.tokens_per_second:.1f} tokens/sec")
+            
+        except Exception as e:
+            console.print(f"❌ Generation failed: {e}")
+            return
+        
+        # Test chat format
+        console.print("\n[yellow]Testing Chat Format:[/yellow]")
+        try:
+            chat_result = await ollama_mgr.chat(
+                messages=[
+                    {"role": "system", "content": "You are an email categorization assistant."},
+                    {"role": "user", "content": "What category would you assign to an email about 'Project budget review'?"}
+                ],
+                options={"num_predict": 30}
+            )
+            console.print("✅ Chat successful")
+            console.print(f"💬 Chat Response: {chat_result.content[:100]}...")
+            
+        except Exception as e:
+            console.print(f"❌ Chat failed: {e}")
+        
+        # Get model statistics
+        console.print("\n[yellow]Model Statistics:[/yellow]")
+        stats = await ollama_mgr.get_model_stats()
+        console.print(f"📊 Total Models: {stats['total_models']}")
+        console.print(f"🔥 Loaded Models: {stats['loaded_models']}")
+        console.print(f"💾 Total Size: {stats['total_size_bytes'] / (1024*1024*1024):.1f}GB")
+        console.print(f"🎯 Current Model: {stats['current_model']}")
+        
+        console.print("\n[green]✅ All Ollama tests passed![/green]")
+        
+    except Exception as e:
+        console.print(f"\n[red]❌ Ollama test failed: {e}[/red]")
+        # Print more details for debugging
+        import traceback
+        console.print(f"[red]Details: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
+@app.command()
+def models(
+    action: str = typer.Argument(help="Action: list, pull, delete, health"),
+    model_name: Optional[str] = typer.Argument(default=None, help="Model name for pull/delete actions"),
+):
+    """Manage Ollama models."""
+    asyncio.run(_manage_models(action, model_name))
+
+async def _manage_models(action: str, model_name: Optional[str]):
+    """Manage Ollama models implementation."""
+    try:
+        ollama_mgr = await get_ollama_manager()
+        
+        if action == "list":
+            console.print("[blue]Available Ollama Models:[/blue]")
+            models = await ollama_mgr.list_models()
+            
+            if not models:
+                console.print("No models found")
+                return
+            
+            table = Table(title="Ollama Models")
+            table.add_column("Name", style="cyan")
+            table.add_column("Size", style="yellow")
+            table.add_column("Modified", style="green")
+            table.add_column("Loaded", style="magenta")
+            
+            for model in models:
+                size_gb = model.size / (1024*1024*1024)
+                loaded_status = "✅" if model.loaded else "❌"
+                table.add_row(
+                    model.name,
+                    f"{size_gb:.1f} GB",
+                    model.modified_at,
+                    loaded_status
+                )
+            
+            console.print(table)
+            
+        elif action == "health":
+            console.print("[blue]Ollama Health Status:[/blue]")
+            health = await ollama_mgr.get_health_status()
+            stats = await ollama_mgr.get_model_stats()
+            
+            console.print(f"Status: {health['status']}")
+            console.print(f"Host: {health['host']}")
+            console.print(f"Response Time: {health.get('response_time_ms', 0):.2f}ms")
+            console.print(f"Total Models: {stats['total_models']}")
+            console.print(f"Loaded Models: {stats['loaded_models']}")
+            console.print(f"Current Model: {stats['current_model']}")
+            
+        elif action == "pull":
+            if not model_name:
+                console.print("[red]Model name required for pull action[/red]")
+                raise typer.Exit(1)
+            
+            console.print(f"[blue]Pulling model: {model_name}[/blue]")
+            await ollama_mgr.pull_model(model_name)
+            console.print(f"[green]✅ Model {model_name} pulled successfully[/green]")
+            
+        elif action == "delete":
+            if not model_name:
+                console.print("[red]Model name required for delete action[/red]")
+                raise typer.Exit(1)
+            
+            # Confirm deletion
+            confirm = typer.confirm(f"Are you sure you want to delete model '{model_name}'?")
+            if not confirm:
+                console.print("Deletion cancelled")
+                return
+            
+            console.print(f"[blue]Deleting model: {model_name}[/blue]")
+            await ollama_mgr.delete_model(model_name)
+            console.print(f"[green]✅ Model {model_name} deleted successfully[/green]")
+            
+        else:
+            console.print(f"[red]Unknown action: {action}[/red]")
+            console.print("Available actions: list, pull, delete, health")
+            raise typer.Exit(1)
+            
+    except Exception as e:
+        console.print(f"[red]❌ Models command failed: {e}[/red]")
         raise typer.Exit(1)
 
 @app.command()
