@@ -15,6 +15,7 @@ from src.core.exceptions import ConfigurationError
 from src.core.event_bus import get_event_bus, AgentMessage
 from src.core.state_manager import get_state_manager, WorkflowCheckpoint
 from src.integrations.ollama_client import get_ollama_manager
+from src.integrations.gmail_client import get_gmail_client
 
 
 app = typer.Typer(help="Email Categorization Agent CLI")
@@ -102,7 +103,14 @@ def init(
         console.print("2. Install and start Ollama with required models:")
         console.print("   ollama pull gemma2:3b")
         console.print("   ollama pull llama3.2:3b")
-        console.print("3. Run 'email-agent categorize' to start categorizing emails")
+        console.print("3. Set up Gmail API credentials:")
+        console.print("   - Go to https://console.cloud.google.com/")
+        console.print("   - Create a new project or select existing")
+        console.print("   - Enable Gmail API")
+        console.print("   - Create OAuth 2.0 credentials (Desktop application)")
+        console.print("   - Download credentials.json to project root")
+        console.print("4. Run 'email-agent test-gmail' to test Gmail integration")
+        console.print("5. Run 'email-agent categorize' to start categorizing emails")
         
     except Exception as e:
         console.print(f"[red]Initialization failed: {e}[/red]")
@@ -175,6 +183,17 @@ async def _status():
                 table.add_row("Ollama", "❌ Unhealthy", health.get("error", "Unknown")[:50])
         except Exception as e:
             table.add_row("Ollama", "❌ Error", str(e)[:50])
+        
+        # Test Gmail connectivity
+        try:
+            gmail_client = await get_gmail_client()
+            health = await gmail_client.get_health_status()
+            if health["status"] == "healthy":
+                table.add_row("Gmail", "✅ Connected", f"Email: {health.get('email_address', 'Unknown')[:30]}")
+            else:
+                table.add_row("Gmail", "❌ Unhealthy", health.get("error", "Unknown")[:50])
+        except Exception as e:
+            table.add_row("Gmail", "❌ Error", str(e)[:50])
         
         console.print(table)
         
@@ -447,6 +466,181 @@ async def _manage_models(action: str, model_name: Optional[str]):
             
     except Exception as e:
         console.print(f"[red]❌ Models command failed: {e}[/red]")
+        raise typer.Exit(1)
+
+@app.command()
+def test_gmail():
+    """Test Gmail API integration and authentication."""
+    asyncio.run(_test_gmail())
+
+async def _test_gmail():
+    """Test Gmail functionality."""
+    console.print("[blue]Testing Gmail integration...[/blue]")
+    
+    try:
+        # Initialize Gmail client
+        console.print("\n[yellow]Initializing Gmail Client:[/yellow]")
+        gmail_client = await get_gmail_client()
+        console.print("✅ Gmail client initialized")
+        
+        # Get profile
+        console.print("\n[yellow]Testing Authentication:[/yellow]")
+        profile = await gmail_client.get_profile()
+        console.print(f"📧 Email: {profile.get('emailAddress')}")
+        console.print(f"📊 Total Messages: {profile.get('messagesTotal', 0):,}")
+        console.print(f"🧵 Total Threads: {profile.get('threadsTotal', 0):,}")
+        
+        # List labels
+        console.print("\n[yellow]Testing Labels:[/yellow]")
+        labels = await gmail_client.list_labels()
+        console.print(f"🏷️  Total Labels: {len(labels)}")
+        
+        # Show first few labels
+        for label in labels[:5]:
+            console.print(f"   📝 {label.name} ({label.type}) - {label.messages_total} messages")
+        
+        # Search for recent messages
+        console.print("\n[yellow]Testing Message Search:[/yellow]")
+        try:
+            recent_messages = []
+            async for message in gmail_client.search_messages("in:inbox", max_results=5):
+                recent_messages.append(message)
+                
+            console.print(f"📨 Found {len(recent_messages)} recent messages")
+            
+            # Show message details
+            for msg in recent_messages[:3]:
+                console.print(f"   ✉️  {msg.subject[:50]}... from {msg.sender[:30]}")
+                
+        except Exception as e:
+            console.print(f"❌ Message search failed: {e}")
+        
+        # Test label operations (safe operations only)
+        console.print("\n[yellow]Testing Label Operations:[/yellow]")
+        try:
+            # Try to get a common label
+            inbox_label = await gmail_client.get_label_by_name("INBOX")
+            if inbox_label:
+                console.print(f"✅ Found INBOX label: {inbox_label.messages_total} messages")
+            
+            # Test creating a test label (we'll delete it after)
+            test_label_name = f"EmailAgent_Test_{int(time.time())}"
+            test_label = await gmail_client.create_label(test_label_name)
+            console.print(f"✅ Created test label: {test_label.name}")
+            
+            # Clean up test label
+            await gmail_client.delete_label(test_label_name)
+            console.print("✅ Cleaned up test label")
+            
+        except Exception as e:
+            console.print(f"❌ Label operations failed: {e}")
+        
+        # Get health status
+        console.print("\n[yellow]Health Status:[/yellow]")
+        health = await gmail_client.get_health_status()
+        console.print(f"🏥 Status: {health['status']}")
+        console.print(f"🔐 Authenticated: {health['authenticated']}")
+        console.print(f"📈 Credentials Valid: {health.get('credentials_valid', False)}")
+        
+        console.print("\n[green]✅ All Gmail tests passed![/green]")
+        
+    except Exception as e:
+        console.print(f"\n[red]❌ Gmail test failed: {e}[/red]")
+        # Print more details for debugging
+        import traceback
+        console.print(f"[red]Details: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
+@app.command()
+def gmail(
+    action: str = typer.Argument(help="Action: labels, messages, search, health"),
+    query: Optional[str] = typer.Argument(default=None, help="Search query for messages"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Limit results"),
+):
+    """Manage Gmail operations."""
+    asyncio.run(_manage_gmail(action, query, limit))
+
+async def _manage_gmail(action: str, query: Optional[str], limit: int):
+    """Manage Gmail operations implementation."""
+    try:
+        gmail_client = await get_gmail_client()
+        
+        if action == "labels":
+            console.print("[blue]Gmail Labels:[/blue]")
+            labels = await gmail_client.list_labels()
+            
+            table = Table(title="Gmail Labels")
+            table.add_column("Name", style="cyan")
+            table.add_column("Type", style="yellow")
+            table.add_column("Messages", style="green")
+            table.add_column("Unread", style="red")
+            
+            for label in sorted(labels, key=lambda l: l.name):
+                table.add_row(
+                    label.name,
+                    label.type,
+                    str(label.messages_total),
+                    str(label.messages_unread) if label.messages_unread else "0"
+                )
+            
+            console.print(table)
+            
+        elif action == "messages":
+            console.print(f"[blue]Recent Messages (limit: {limit}):[/blue]")
+            
+            messages = []
+            async for message in gmail_client.search_messages("in:inbox", max_results=limit):
+                messages.append(message)
+            
+            table = Table(title="Recent Messages")
+            table.add_column("Subject", style="cyan", max_width=40)
+            table.add_column("From", style="yellow", max_width=30)
+            table.add_column("Date", style="green")
+            table.add_column("Labels", style="magenta")
+            
+            for msg in messages:
+                labels_str = ", ".join(msg.label_ids[:3])  # Show first 3 labels
+                if len(msg.label_ids) > 3:
+                    labels_str += "..."
+                    
+                table.add_row(
+                    msg.subject[:40] + "..." if len(msg.subject) > 40 else msg.subject,
+                    msg.sender[:30] + "..." if len(msg.sender) > 30 else msg.sender,
+                    msg.date[:20] if msg.date else "Unknown",
+                    labels_str
+                )
+            
+            console.print(table)
+            
+        elif action == "search":
+            if not query:
+                console.print("[red]Search query required for search action[/red]")
+                raise typer.Exit(1)
+            
+            console.print(f"[blue]Searching for: '{query}' (limit: {limit}):[/blue]")
+            
+            messages = []
+            async for message in gmail_client.search_messages(query, max_results=limit):
+                messages.append(message)
+            
+            console.print(f"Found {len(messages)} messages:")
+            for msg in messages:
+                console.print(f"📧 {msg.subject[:60]} - from {msg.sender[:40]}")
+                
+        elif action == "health":
+            console.print("[blue]Gmail Health Status:[/blue]")
+            health = await gmail_client.get_health_status()
+            
+            for key, value in health.items():
+                console.print(f"{key}: {value}")
+                
+        else:
+            console.print(f"[red]Unknown action: {action}[/red]")
+            console.print("Available actions: labels, messages, search, health")
+            raise typer.Exit(1)
+            
+    except Exception as e:
+        console.print(f"[red]❌ Gmail command failed: {e}[/red]")
         raise typer.Exit(1)
 
 @app.command()
