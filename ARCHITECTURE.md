@@ -35,6 +35,13 @@ src/
 │   ├── gmail_client.py    # Gmail API integration
 │   └── ollama_client.py   # Ollama LLM integration
 │
+├── agents/                # Multi-agent orchestration
+│   ├── __init__.py        # Agent exports
+│   ├── orchestration_agent.py     # LangGraph workflow coordinator
+│   ├── email_retrieval_agent.py   # Email fetching and monitoring
+│   ├── categorization_agent.py    # AI-powered categorization
+│   └── user_interaction_agent.py  # User feedback handling
+│
 └── cli.py                 # Command-line interface
 ```
 
@@ -78,13 +85,23 @@ src/
 
 **Purpose**: Business logic orchestration and domain operations
 
+This layer provides high-level business operations that combine multiple integrations and manage complex workflows.
+
 **Components**:
 
 #### EmailService
-- Email fetching and management
-- Storage optimization integration
-- Label management
-- Search and filtering
+**Role**: High-level email operations orchestrator
+- **Email workflow management**: Complete fetch → store → index cycles
+- **Storage optimization**: Automatic caching, compression, lazy loading
+- **Search operations**: Business-logic searches with automatic storage
+- **Transaction coordination**: Ensures data consistency across operations
+- **Reference management**: Maintains email references and metadata
+
+**Key Methods**:
+- `search_emails(query, limit)` → Returns `EmailReference` objects with automatic caching
+- `get_email_content(email_id)` → Returns full `EmailMessage` with storage optimization
+- `fetch_new_emails(filter)` → Complete workflow for processing new emails
+- `get_email_stats()` → Business metrics and statistics
 
 #### CategorizationService
 - LLM-based email categorization
@@ -92,44 +109,155 @@ src/
 - Batch processing
 - Learning from feedback
 
-#### NotificationService
+#### NotificationService (UserService)
 - User interaction management
 - System notifications
 - Event handling
 - Timeout management
 
 **Benefits**:
-- Clear separation of concerns
-- Improved testability
-- Better maintainability
-- Business logic isolation
+- **Business logic isolation**: Domain operations separated from API calls
+- **Transaction management**: Ensures data consistency
+- **Storage optimization**: Automatic caching and compression
+- **Error resilience**: Built-in retry and recovery logic
 
 ### 4. Integrations Layer (`src/integrations/`)
 
-**Purpose**: External service integration and API management
+**Purpose**: Direct external service integration and low-level API management
+
+This layer provides thin wrappers around external APIs with authentication, rate limiting, and error handling.
 
 **Components**:
-- **Gmail Client**: OAuth2, rate limiting, batch operations
-- **Ollama Client**: Model management, health monitoring
+
+#### GmailClient
+**Role**: Low-level Gmail API wrapper
+- **Direct API interaction**: Raw Gmail API calls with proper authentication
+- **OAuth2 management**: Token refresh, credential storage, authentication flow
+- **Rate limiting**: Gmail API quota management and request throttling
+- **Raw data conversion**: Gmail API responses → domain models
+- **Batch operations**: Efficient bulk Gmail operations
+
+**Key Methods**:
+- `get_message(id, format)` → Single email retrieval from Gmail API
+- `list_messages(query, max_results)` → Search Gmail with raw query
+- `search_messages(query)` → Async generator for message iteration
+- `get_labels()`, `create_label()`, `modify_labels()` → Label management
+- `setup_push_notifications()` → Real-time notification setup
+
+#### OllamaClient  
+**Role**: Local LLM integration
+- **Model management**: Loading, health monitoring, version control
+- **Chat completion**: Direct LLM inference calls
+- **Health monitoring**: Model status and performance tracking
 
 **Features**:
-- Automatic retry with exponential backoff
-- Rate limiting and quota management
-- Health monitoring and circuit breakers
-- Comprehensive error handling
+- **Authentication handling**: OAuth2, token refresh, credential security
+- **Rate limiting**: API quota management and request throttling  
+- **Error handling**: Retries, circuit breakers, graceful degradation
+- **Performance optimization**: Connection pooling, request batching
 
-## Data Flow
+### 5. Agents Layer (`src/agents/`)
+
+**Purpose**: Multi-agent workflow orchestration using LangGraph
+
+This layer implements specialized agents that work together to process emails through complex workflows with state management and checkpointing.
+
+**Components**:
+
+#### OrchestrationAgent
+**Role**: Workflow coordinator using LangGraph
+- **Workflow management**: StateGraph-based email processing pipeline
+- **State persistence**: SQLite checkpointing for workflow recovery
+- **Conditional routing**: Dynamic workflow paths based on confidence scores
+- **Agent coordination**: Manages communication between specialized agents
+
+**Key Features**:
+- LangGraph StateGraph for complex workflows
+- Automatic workflow checkpointing and recovery
+- Conditional branching for user interactions
+- Error handling and workflow resilience
+
+#### EmailRetrievalAgent  
+**Role**: Email fetching and monitoring
+- **Email retrieval**: Batch fetching with error handling
+- **Push notifications**: Background monitoring for new emails
+- **Real-time updates**: 30-second polling for new messages
+- **Notification publishing**: Event bus integration for new email alerts
+
+#### CategorizationAgent
+**Role**: AI-powered email categorization  
+- **Batch processing**: Configurable concurrency (5 emails per batch)
+- **Confidence scoring**: AI confidence assessment and statistics
+- **Feedback integration**: Learning from user corrections
+- **Fallback handling**: Graceful degradation for failed categorizations
+
+#### UserInteractionAgent
+**Role**: Human-in-the-loop processing
+- **Ambiguous case handling**: User input for unclear categorizations  
+- **Timeout management**: 5-minute interaction expiry
+- **Feedback collection**: User choice recording and processing
+- **Workflow completion**: Automatic progression after user input
+
+**Agent Communication**:
+- **Event Bus**: Asynchronous message passing between agents
+- **Correlation IDs**: Request/response tracking across agent calls
+- **Priority queues**: Urgent vs. normal message handling
+- **Error propagation**: Automatic error reporting and recovery
+
+## Data Flow & Layer Interaction
+
+### Typical Email Processing Flow
 
 ```
-User Input (CLI)
+User Script/CLI
     ↓
-Services Layer (Business Logic)
-    ↓
-Core Infrastructure (Event Bus, State Management)
-    ↓
-Integrations Layer (Gmail API, Ollama LLM)
-    ↓
-External Services
+EmailService.search_emails() 
+    ↓ (orchestrates)
+GmailClient.search_messages() → Core.EmailStorage → Models.EmailReference
+    ↓ (for each email)
+EmailService.get_email_content()
+    ↓ (orchestrates)  
+GmailClient.get_message() → Core.EmailStorage → Models.EmailMessage
+    ↓ (summarization)
+OllamaClient.chat_completion() → Models.GenerationResult
+```
+
+### Layer Responsibilities
+
+| Layer | Responsibility | Example |
+|-------|---------------|---------|
+| **User Script** | Application logic | `summarize_unread_emails.py` |
+| **Services** | Business workflows | `EmailService.search_emails()` |
+| **Integrations** | API wrappers | `GmailClient.get_message()` |
+| **Core** | Infrastructure | `EmailStorage.store_email()` |
+| **Models** | Data structures | `EmailMessage`, `EmailReference` |
+
+### When to Use Which Layer
+
+**Use EmailService when:**
+- You want business-level operations
+- You need automatic caching/storage
+- You want transaction consistency
+- You're building workflows
+
+**Use GmailClient when:**
+- You need direct Gmail API access
+- You want fine-grained control
+- You're implementing new integrations
+- You need raw API responses
+
+**Example Comparison:**
+```python
+# ❌ Don't do this (skips business logic)
+gmail_client = await get_gmail_client()
+async for msg in gmail_client.search_messages("is:unread"):
+    email = await gmail_client.get_message(msg.id)  # No caching!
+
+# ✅ Do this instead (includes business logic)
+email_service = EmailService()
+await email_service.initialize()
+async for ref in email_service.search_emails("is:unread"):
+    email = await email_service.get_email_content(ref.email_id)  # With caching!
 ```
 
 ## Key Design Patterns

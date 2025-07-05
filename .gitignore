@@ -119,8 +119,7 @@ cython_debug/
 # Project specific
 credentials.json
 token.json
-data/*.db
-data/*.sqlite
+data
 logs/*.log
 config/credentials/
 *.key

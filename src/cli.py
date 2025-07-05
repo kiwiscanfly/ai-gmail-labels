@@ -15,6 +15,7 @@ from src.core.exceptions import ConfigurationError
 from src.core.event_bus import get_event_bus
 from src.core.state_manager import get_state_manager
 from src.core.error_recovery import get_error_recovery_manager
+from src.core.system_monitor import get_system_monitor, get_resource_stats
 from src.integrations.ollama_client import get_ollama_manager
 from src.integrations.gmail_client import get_gmail_client
 from src.models.agent import AgentMessage, WorkflowCheckpoint
@@ -205,6 +206,22 @@ async def _status():
         except Exception as e:
             table.add_row("Error Recovery", "❌ Error", str(e)[:50])
         
+        # Test System Monitor
+        try:
+            resource_stats = await get_resource_stats()
+            if resource_stats.get("status") == "no_data":
+                # Start monitoring for future status checks
+                monitor = await get_system_monitor()
+                await monitor.start_monitoring()
+                table.add_row("System Monitor", "⚡ Starting", "Monitoring initialized")
+            else:
+                cpu = resource_stats["system"]["cpu_percent"]
+                memory = resource_stats["system"]["memory_percent"]
+                status = "✅ Healthy" if resource_stats["status"] == "healthy" else "⚠️ Warning"
+                table.add_row("System Monitor", status, f"CPU: {cpu}%, Mem: {memory}%")
+        except Exception as e:
+            table.add_row("System Monitor", "❌ Error", str(e)[:50])
+        
         console.print(table)
         
         if errors:
@@ -244,9 +261,70 @@ def categorize(
 
 
 @app.command()
+def test_gmail():
+    """Test Gmail authentication and API access."""
+    asyncio.run(_test_gmail())
+
+@app.command()
 def test_database():
     """Test database systems (event bus and state management)."""
     asyncio.run(_test_database())
+
+async def _test_gmail():
+    """Test Gmail authentication and API access."""
+    console.print("[blue]Testing Gmail authentication and API access...[/blue]")
+    
+    try:
+        console.print("\n[yellow]Step 1: Initializing Gmail client...[/yellow]")
+        gmail_client = await get_gmail_client()
+        console.print("✅ Gmail client initialized successfully")
+        
+        console.print("\n[yellow]Step 2: Testing authentication...[/yellow]")
+        profile = await gmail_client.get_profile()
+        console.print(f"✅ Authentication successful")
+        console.print(f"   📧 Email: {profile.get('emailAddress')}")
+        console.print(f"   📬 Total messages: {profile.get('messagesTotal', 'N/A')}")
+        
+        console.print("\n[yellow]Step 3: Testing label access...[/yellow]")
+        labels = await gmail_client.get_labels()
+        console.print(f"✅ Found {len(labels)} labels")
+        
+        # Show some common labels
+        common_labels = [label for label in labels if label.name in ['INBOX', 'SENT', 'DRAFT', 'IMPORTANT']]
+        if common_labels:
+            console.print("   📋 Common labels:")
+            for label in common_labels[:5]:
+                console.print(f"      - {label.name}")
+        
+        console.print("\n[yellow]Step 4: Testing email retrieval (last 3 emails)...[/yellow]")
+        email_refs = []
+        async for email_ref in gmail_client.search_emails("", limit=3):
+            email_refs.append(email_ref)
+        
+        console.print(f"✅ Found {len(email_refs)} recent emails")
+        
+        if email_refs:
+            console.print("   📧 Recent emails:")
+            for ref in email_refs:
+                # Get basic email info without full content
+                email = await gmail_client.get_email_headers(ref.email_id)
+                if email:
+                    subject = email.get('subject', 'No subject')[:50]
+                    sender = email.get('from', 'Unknown')[:30]
+                    console.print(f"      - From: {sender}, Subject: {subject}...")
+        
+        console.print("\n[green]🎉 Gmail authentication test completed successfully![/green]")
+        console.print("\n[blue]You can now run email categorization:[/blue]")
+        console.print("   python -m src.cli categorize --limit 5")
+        
+    except Exception as e:
+        console.print(f"\n[red]❌ Gmail test failed: {e}[/red]")
+        console.print("\n[yellow]Troubleshooting steps:[/yellow]")
+        console.print("1. Run: python setup_gmail_auth.py")
+        console.print("2. Ensure credentials.json exists")
+        console.print("3. Check Gmail API is enabled in Google Cloud Console")
+        console.print("4. Verify OAuth consent screen is configured")
+        raise typer.Exit(1)
 
 async def _test_database():
     """Test database functionality."""
@@ -575,6 +653,72 @@ def test_error_recovery():
     """Test error recovery system."""
     asyncio.run(_test_error_recovery())
 
+@app.command()
+def monitor(
+    duration: int = typer.Option(60, "--duration", "-d", help="Monitoring duration in seconds"),
+    interval: int = typer.Option(5, "--interval", "-i", help="Display interval in seconds")
+):
+    """Monitor system resource usage in real-time."""
+    asyncio.run(_monitor_resources(duration, interval))
+
+@app.command()
+def validate_config():
+    """Validate configuration for startup readiness."""
+    try:
+        console.print("[blue]Validating configuration...[/blue]")
+        
+        config = get_config()
+        validation = config.validate_startup_requirements()
+        
+        console.print("\n[bold blue]📋 Configuration Validation Report[/bold blue]\n")
+        
+        # Show status
+        status = validation["status"]
+        if status == "valid":
+            console.print("[bold green]✅ Overall Status: VALID[/bold green]")
+        elif status == "warning":
+            console.print("[bold yellow]⚠️ Overall Status: WARNING[/bold yellow]")
+        else:
+            console.print("[bold red]❌ Overall Status: ERROR[/bold red]")
+        
+        console.print()
+        
+        # Show checks
+        if validation["checks"]:
+            console.print("[bold green]✅ Passed Checks:[/bold green]")
+            for check in validation["checks"]:
+                console.print(f"  {check}")
+            console.print()
+        
+        # Show warnings
+        if validation["warnings"]:
+            console.print("[bold yellow]⚠️ Warnings:[/bold yellow]")
+            for warning in validation["warnings"]:
+                console.print(f"  {warning}")
+            console.print()
+        
+        # Show errors
+        if validation["errors"]:
+            console.print("[bold red]❌ Errors:[/bold red]")
+            for error in validation["errors"]:
+                console.print(f"  {error}")
+            console.print()
+        
+        # Summary
+        console.print(f"[dim]Summary: {len(validation['checks'])} checks passed, {len(validation['warnings'])} warnings, {len(validation['errors'])} errors[/dim]")
+        
+        if validation["errors"]:
+            console.print("\n[red]⚠️ Configuration has errors that must be fixed before startup[/red]")
+            raise typer.Exit(1)
+        elif validation["warnings"]:
+            console.print("\n[yellow]⚠️ Configuration has warnings - system will work but may not be optimal[/yellow]")
+        else:
+            console.print("\n[green]✅ Configuration is ready for production use[/green]")
+            
+    except Exception as e:
+        console.print(f"[red]❌ Configuration validation failed: {e}[/red]")
+        raise typer.Exit(1)
+
 async def _test_error_recovery():
     """Test error recovery functionality."""
     console.print("[blue]Testing error recovery system...[/blue]")
@@ -652,6 +796,145 @@ async def _test_error_recovery():
         console.print(f"\n[red]❌ Error recovery test failed: {e}[/red]")
         import traceback
         console.print(f"[red]Details: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
+async def _monitor_resources(duration: int, interval: int):
+    """Monitor system resources implementation."""
+    console.print(f"[blue]Starting system monitoring for {duration} seconds...[/blue]")
+    
+    try:
+        # Initialize and start monitoring
+        monitor = await get_system_monitor()
+        await monitor.start_monitoring()
+        
+        console.print(f"[green]✅ System monitoring started[/green]")
+        console.print(f"[yellow]Press Ctrl+C to stop early[/yellow]\n")
+        
+        start_time = asyncio.get_event_loop().time()
+        
+        while (asyncio.get_event_loop().time() - start_time) < duration:
+            try:
+                # Get current resource stats
+                stats = await get_resource_stats()
+                
+                if stats.get("status") != "no_data":
+                    # Clear screen and show current stats
+                    console.clear()
+                    console.print("[bold blue]📊 System Resource Monitor[/bold blue]\n")
+                    
+                    # Create system stats table
+                    system_table = Table(title="System Resources")
+                    system_table.add_column("Metric", style="cyan")
+                    system_table.add_column("Current", style="green")
+                    system_table.add_column("5min Avg", style="yellow")
+                    system_table.add_column("Status", style="bold")
+                    
+                    sys_stats = stats["system"]
+                    
+                    # CPU row
+                    cpu_status = "🟢 Normal" if sys_stats["cpu_percent"] < 50 else "🟡 High" if sys_stats["cpu_percent"] < 80 else "🔴 Critical"
+                    system_table.add_row(
+                        "CPU Usage",
+                        f"{sys_stats['cpu_percent']:.1f}%",
+                        f"{sys_stats['cpu_percent_avg_5min']:.1f}%",
+                        cpu_status
+                    )
+                    
+                    # Memory row
+                    mem_status = "🟢 Normal" if sys_stats["memory_percent"] < 60 else "🟡 High" if sys_stats["memory_percent"] < 85 else "🔴 Critical"
+                    system_table.add_row(
+                        "Memory Usage",
+                        f"{sys_stats['memory_percent']:.1f}%",
+                        f"{sys_stats['memory_percent_avg_5min']:.1f}%",
+                        mem_status
+                    )
+                    
+                    # Disk row
+                    disk_status = "🟢 Normal" if sys_stats["disk_usage_percent"] < 70 else "🟡 High" if sys_stats["disk_usage_percent"] < 90 else "🔴 Critical"
+                    system_table.add_row(
+                        "Disk Usage",
+                        f"{sys_stats['disk_usage_percent']:.1f}%",
+                        "-",
+                        disk_status
+                    )
+                    
+                    console.print(system_table)
+                    console.print()
+                    
+                    # Create process stats table
+                    process_table = Table(title="Process Resources")
+                    process_table.add_column("Metric", style="cyan")
+                    process_table.add_column("Current", style="green")
+                    process_table.add_column("5min Avg", style="yellow")
+                    process_table.add_column("Details", style="white")
+                    
+                    proc_stats = stats["process"]
+                    
+                    process_table.add_row(
+                        "CPU Usage",
+                        f"{proc_stats['cpu_percent']:.1f}%",
+                        f"{proc_stats['cpu_percent_avg_5min']:.1f}%",
+                        f"PID: {proc_stats['pid']}"
+                    )
+                    
+                    process_table.add_row(
+                        "Memory Usage",
+                        f"{proc_stats['memory_percent']:.1f}%",
+                        f"{proc_stats['memory_percent_avg_5min']:.1f}%",
+                        f"RSS: {proc_stats['memory_rss_mb']:.1f}MB"
+                    )
+                    
+                    process_table.add_row(
+                        "Threads",
+                        str(proc_stats['num_threads']),
+                        "-",
+                        f"Status: {proc_stats['status']}"
+                    )
+                    
+                    if proc_stats['num_fds'] > 0:
+                        process_table.add_row(
+                            "File Descriptors",
+                            str(proc_stats['num_fds']),
+                            "-",
+                            "Unix only"
+                        )
+                    
+                    console.print(process_table)
+                    console.print()
+                    
+                    # Show load average if available
+                    if sys_stats.get('load_average'):
+                        load_avg = sys_stats['load_average']
+                        console.print(f"[bold]Load Average:[/bold] {load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}")
+                    
+                    # Show overall status
+                    overall_status = stats["status"]
+                    status_color = "green" if overall_status == "healthy" else "yellow"
+                    console.print(f"\n[bold {status_color}]Overall Status: {overall_status.upper()}[/bold {status_color}]")
+                    
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    remaining = duration - elapsed
+                    console.print(f"\n[dim]Elapsed: {elapsed:.0f}s | Remaining: {remaining:.0f}s | Next update in {interval}s[/dim]")
+                
+                await asyncio.sleep(interval)
+                
+            except KeyboardInterrupt:
+                console.print("\n[yellow]⚠️ Monitoring stopped by user[/yellow]")
+                break
+                
+        console.print(f"\n[green]✅ Monitoring completed after {duration} seconds[/green]")
+        
+        # Show final summary
+        final_stats = await get_resource_stats()
+        if final_stats.get("status") != "no_data":
+            console.print("\n[bold blue]📋 Final Summary:[/bold blue]")
+            console.print(f"System CPU: {final_stats['system']['cpu_percent']:.1f}%")
+            console.print(f"System Memory: {final_stats['system']['memory_percent']:.1f}%")
+            console.print(f"Process CPU: {final_stats['process']['cpu_percent']:.1f}%")
+            console.print(f"Process Memory: {final_stats['process']['memory_percent']:.1f}%")
+        
+    except Exception as e:
+        console.print(f"\n[red]❌ Monitoring failed: {e}[/red]")
         raise typer.Exit(1)
 
 async def _manage_gmail(action: str, query: Optional[str], limit: int):
