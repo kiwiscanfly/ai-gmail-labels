@@ -15,6 +15,7 @@ import structlog
 
 from src.integrations.ollama_client import get_ollama_manager
 from src.services.email_service import EmailService
+from src.services.email_prioritizer import EmailPrioritizer
 from src.models.email import EmailMessage
 from src.models.ollama import ModelConfig
 from src.core.config import get_config
@@ -28,6 +29,7 @@ class EmailSummarizer:
     def __init__(self):
         self.email_service = None
         self.ollama_manager = None
+        self.prioritizer = EmailPrioritizer()
         self.config = get_config()
         
     async def initialize(self) -> None:
@@ -42,6 +44,10 @@ class EmailSummarizer:
         # Initialize Ollama client
         self.ollama_manager = await get_ollama_manager()
         print("✅ Ollama client connected")
+        
+        # Initialize email prioritizer
+        await self.prioritizer.initialize()
+        print("✅ Email prioritizer initialized")
         
         # Test Ollama connection
         health = await self.ollama_manager.get_health_status()
@@ -74,6 +80,14 @@ class EmailSummarizer:
         """Summarize a single email using Ollama."""
         print(f"🤖 Summarizing: {email.subject[:40]}...")
         
+        # Analyze email priority first
+        priority_score = await self.prioritizer.analyze_priority(email)
+        
+        # Extract links from HTML content
+        links = []
+        if email.body_html:
+            links = self._extract_links(email.body_html)
+        
         # Extract email content for summarization
         content_parts = []
         
@@ -97,8 +111,8 @@ class EmailSummarizer:
         elif email.body_html:
             # If only HTML available, use a portion of it
             html = email.body_html
-            # Simple HTML to text conversion
-            text = re.sub(r'<[^>]+>', ' ', html)
+            # Better HTML to text conversion
+            text = self._html_to_text(html)
             text = re.sub(r'\s+', ' ', text).strip()
             if len(text) > 4000:
                 text = text[:4000] + "..."
@@ -106,17 +120,20 @@ class EmailSummarizer:
         
         email_text = "\n\n".join(content_parts)
         
-        # Create summarization prompt
+        # Create summarization prompt with priority context
+        priority_context = f"Priority Assessment: {priority_score.level.title()} ({priority_score.reasoning})"
+        
         prompt = f"""Please analyze this email and provide a comprehensive summary. 
 
 Email to analyze:
 {email_text}
 
+{priority_context}
+
 Please provide:
 1. A concise summary (2-3 sentences) of what this email is about
 2. The key points as a bulleted list
 3. Any action items or important dates mentioned
-4. The overall tone/urgency level (low/medium/high)
 
 Format your response as:
 
@@ -132,26 +149,23 @@ Format your response as:
 ## Action Items
 - [Action item 1 if any]
 - [Action item 2 if any]
-[Or "None identified" if no action items]
-
-## Priority Level
-[Low/Medium/High] - [Brief reason]"""
+[Or "None identified" if no action items]"""
 
         try:
             # Configure model for summarization
             model_config = ModelConfig(
                 temperature=0.3,  # Lower temperature for more consistent summaries
-                max_tokens=800,   # Enough for detailed summary
+                num_predict=800,   # Enough for detailed summary
                 top_p=0.9
             )
             
             # Get summary from Ollama
-            response = await self.ollama_manager.chat_completion(
+            response = await self.ollama_manager.chat(
                 messages=[{"role": "user", "content": prompt}],
-                model_config=model_config
+                options=model_config.to_options()
             )
             
-            summary_text = response.get("message", {}).get("content", "")
+            summary_text = response.content
             
             # Parse the response into structured data
             summary_data = self._parse_summary_response(summary_text)
@@ -160,7 +174,16 @@ Format your response as:
                 "summary": summary_data.get("summary", "Summary not available"),
                 "key_points": summary_data.get("key_points", []),
                 "action_items": summary_data.get("action_items", []),
-                "priority": summary_data.get("priority", "Medium"),
+                "priority": priority_score.level.title(),
+                "priority_score": priority_score.authenticity_score,
+                "priority_reasoning": priority_score.reasoning,
+                "priority_confidence": priority_score.confidence,
+                "priority_factors": {
+                    "authenticity": priority_score.authenticity_score,
+                    "sender_reputation": priority_score.sender_reputation,
+                    "is_genuine": priority_score.is_genuine_urgency
+                },
+                "links": links,
                 "raw_response": summary_text
             }
             
@@ -170,7 +193,16 @@ Format your response as:
                 "summary": "Failed to generate summary",
                 "key_points": ["Error occurred during summarization"],
                 "action_items": [],
-                "priority": "Unknown",
+                "priority": priority_score.level.title(),
+                "priority_score": priority_score.authenticity_score,
+                "priority_reasoning": priority_score.reasoning,
+                "priority_confidence": priority_score.confidence,
+                "priority_factors": {
+                    "authenticity": priority_score.authenticity_score,
+                    "sender_reputation": priority_score.sender_reputation,
+                    "is_genuine": priority_score.is_genuine_urgency
+                },
+                "links": links,
                 "raw_response": f"Error: {str(e)}"
             }
     
@@ -233,6 +265,98 @@ Format your response as:
         """Create a Gmail web link for the email."""
         return f"https://mail.google.com/mail/u/0/#inbox/{email.id}"
     
+    def _extract_links(self, html: str) -> List[Dict[str, str]]:
+        """Extract links from HTML content with descriptions."""
+        links = []
+        
+        # Find all anchor tags with href attributes
+        import re
+        link_pattern = r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>'
+        matches = re.findall(link_pattern, html, re.IGNORECASE | re.DOTALL)
+        
+        for url, link_text in matches:
+            # Clean up the link text
+            link_text = re.sub(r'<[^>]+>', '', link_text)  # Remove any HTML tags
+            link_text = link_text.strip()
+            
+            # Skip if it's just whitespace or very short
+            if len(link_text) < 2:
+                link_text = "Click here"
+            
+            # Truncate very long link text
+            if len(link_text) > 100:
+                link_text = link_text[:100] + "..."
+            
+            # Skip common tracking or empty links
+            if any(skip in url.lower() for skip in ['unsubscribe', 'pixel', 'tracking', 'analytics']):
+                continue
+                
+            links.append({
+                "url": url,
+                "text": link_text,
+                "domain": self._get_domain(url)
+            })
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_links = []
+        for link in links:
+            link_key = (link["url"], link["text"])
+            if link_key not in seen:
+                seen.add(link_key)
+                unique_links.append(link)
+        
+        return unique_links[:10]  # Limit to 10 links
+    
+    def _get_domain(self, url: str) -> str:
+        """Extract domain from URL."""
+        import re
+        domain_match = re.search(r'https?://([^/]+)', url)
+        if domain_match:
+            domain = domain_match.group(1)
+            # Remove www. prefix
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        return "unknown"
+
+    def _html_to_text(self, html: str) -> str:
+        """Convert HTML to clean text, removing CSS and scripts."""
+        # Remove CSS style blocks
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Remove script blocks
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Remove HTML comments
+        html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+        
+        # Remove meta, link, and other head elements
+        html = re.sub(r'<(meta|link|title|head)[^>]*/?>', '', html, flags=re.IGNORECASE)
+        
+        # Convert common HTML entities
+        html = html.replace('&nbsp;', ' ')
+        html = html.replace('&amp;', '&')
+        html = html.replace('&lt;', '<')
+        html = html.replace('&gt;', '>')
+        html = html.replace('&quot;', '"')
+        html = html.replace('&#39;', "'")
+        
+        # Add spaces around block elements to preserve word boundaries
+        block_elements = ['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'td', 'th']
+        for element in block_elements:
+            html = re.sub(f'<{element}[^>]*>', ' ', html, flags=re.IGNORECASE)
+            html = re.sub(f'</{element}>', ' ', html, flags=re.IGNORECASE)
+        
+        # Remove all remaining HTML tags
+        html = re.sub(r'<[^>]+>', '', html)
+        
+        # Clean up whitespace
+        html = re.sub(r'\s+', ' ', html)
+        html = html.strip()
+        
+        return html
+    
     def _sanitize_filename(self, text: str) -> str:
         """Sanitize text for use as filename."""
         # Remove or replace invalid filename characters
@@ -266,13 +390,23 @@ Format your response as:
             except:
                 received_date = str(email.received_at)
         
+        # Format priority information
+        priority_line = f"**{summary_data.get('priority', 'Medium')}**"
+        if summary_data.get('priority_reasoning'):
+            priority_line += f" - {summary_data.get('priority_reasoning')}"
+        
+        priority_score = summary_data.get('priority_score', 0)
+        confidence = summary_data.get('priority_confidence', 0)
+        if priority_score > 0:
+            priority_line += f" (Score: {priority_score:.2f}, Confidence: {confidence:.1%})"
+        
         # Create markdown content
         markdown_content = f"""# {email.subject}
 
 ## Email Details
 - **From:** {sender_info}
 - **Received:** {received_date}
-- **Priority:** {summary_data.get('priority', 'Medium')}
+- **Priority:** {priority_line}
 - **Gmail ID:** `{email.id}`
 - **Read in Gmail:** [Open Email](https://mail.google.com/mail/u/0/#inbox/{email.id})
 
@@ -301,11 +435,30 @@ Format your response as:
         else:
             markdown_content += "- No action items identified\n"
         
+        # Add links section
+        links = summary_data.get('links', [])
+        if links:
+            markdown_content += "\n## Links and Resources\n"
+            for link in links:
+                domain = link.get('domain', 'unknown')
+                text = link.get('text', 'Link')
+                url = link.get('url', '#')
+                markdown_content += f"- **[{text}]({url})** - {domain}\n"
+        
         # Add labels if any
         if email.label_ids:
             markdown_content += f"\n## Gmail Labels\n"
             for label in email.label_ids:
                 markdown_content += f"- {label}\n"
+        
+        # Add priority analysis section
+        priority_factors = summary_data.get('priority_factors', {})
+        if priority_factors:
+            markdown_content += "\n## Priority Analysis\n"
+            for factor, score in priority_factors.items():
+                bar_length = int(score * 10)
+                bar = "█" * bar_length + "░" * (10 - bar_length)
+                markdown_content += f"- **{factor.title()}**: {score:.2f} `{bar}`\n"
         
         # Add metadata
         markdown_content += f"""
@@ -371,6 +524,38 @@ Format your response as:
         print(f"   ✅ Successfully processed: {processed_count}")
         print(f"   ❌ Failed: {failed_count}")
         print(f"   📁 Files saved to: {output_path.absolute()}")
+    
+    async def shutdown(self) -> None:
+        """Shutdown the email summarizer and clean up resources."""
+        try:
+            if self.ollama_manager:
+                await self.ollama_manager.shutdown()
+            if self.email_service:
+                # The email service doesn't have a shutdown method, but we can clean up the storage
+                pass
+            
+            # Clean up database connections
+            try:
+                from src.core.database_pool import shutdown_database_pool
+                await shutdown_database_pool()
+                print("🔄 Database connections closed")
+            except:
+                pass
+                
+            print("🔄 Cleanup completed")
+            
+            # Cancel any remaining tasks
+            tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+            if tasks:
+                print(f"🔄 Cancelling {len(tasks)} remaining tasks")
+                for i, task in enumerate(tasks):
+                    print(f"   Task {i+1}: {task.get_name() if hasattr(task, 'get_name') else 'unnamed'}")
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                print("🔄 All tasks cancelled")
+                
+        except Exception as e:
+            logger.error("Error during shutdown", error=str(e))
 
 
 async def main():
@@ -387,6 +572,7 @@ async def main():
     print(" 📧 Email Summarization Tool")
     print("=" * 60)
     
+    summarizer = None
     try:
         summarizer = EmailSummarizer()
         await summarizer.initialize()
@@ -401,6 +587,9 @@ async def main():
     except Exception as e:
         print(f"\n❌ Error: {e}")
         logger.error("Script failed", error=str(e))
+    finally:
+        if summarizer:
+            await summarizer.shutdown()
 
 
 if __name__ == "__main__":

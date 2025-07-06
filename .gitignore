@@ -120,6 +120,7 @@ cython_debug/
 credentials.json
 token.json
 data
+email_summaries/
 logs/*.log
 config/credentials/
 *.key

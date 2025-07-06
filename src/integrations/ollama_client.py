@@ -292,12 +292,12 @@ class OllamaModelManager:
             result = GenerationResult(
                 content=response['response'],
                 model=response['model'],
-                total_duration=response.get('total_duration', 0),
-                load_duration=response.get('load_duration', 0),
-                prompt_eval_count=response.get('prompt_eval_count', 0),
-                prompt_eval_duration=response.get('prompt_eval_duration', 0),
-                eval_count=response.get('eval_count', 0),
-                eval_duration=response.get('eval_duration', 0)
+                prompt_tokens=response.get('prompt_eval_count', 0),
+                completion_tokens=response.get('eval_count', 0),
+                total_duration_ns=response.get('total_duration', 0),
+                load_duration_ns=response.get('load_duration', 0),
+                prompt_eval_duration_ns=response.get('prompt_eval_duration', 0),
+                eval_duration_ns=response.get('eval_duration', 0)
             )
             
             logger.debug(
@@ -386,12 +386,12 @@ class OllamaModelManager:
             result = GenerationResult(
                 content=response['message']['content'],
                 model=response['model'],
-                total_duration=response.get('total_duration', 0),
-                load_duration=response.get('load_duration', 0),
-                prompt_eval_count=response.get('prompt_eval_count', 0),
-                prompt_eval_duration=response.get('prompt_eval_duration', 0),
-                eval_count=response.get('eval_count', 0),
-                eval_duration=response.get('eval_duration', 0)
+                prompt_tokens=response.get('prompt_eval_count', 0),
+                completion_tokens=response.get('eval_count', 0),
+                total_duration_ns=response.get('total_duration', 0),
+                load_duration_ns=response.get('load_duration', 0),
+                prompt_eval_duration_ns=response.get('prompt_eval_duration', 0),
+                eval_duration_ns=response.get('eval_duration', 0)
             )
             
             logger.debug(
