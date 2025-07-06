@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "email-categorization-agent": {
+      "command": "uv",
+      "args": [
+        "run", 
+        "python", 
+        "src/email_mcp_server.py"
+      ],
+      "cwd": "/Users/rebecca/repos/email-agents",
+      "env": {
+        "PYTHONPATH": "/Users/rebecca/repos/email-agents"
+      }
+    }
+  }
+}

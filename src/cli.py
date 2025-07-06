@@ -247,17 +247,67 @@ def categorize(
         console.print("[yellow]Running in dry-run mode - no changes will be made[/yellow]")
     
     # This would normally start the actual categorization process
-    # For now, just show a placeholder
-    panel = Panel(
-        "[bold]Email categorization would start here[/bold]\n\n"
-        f"Mode: {mode}\n"
-        f"Dry run: {dry_run}\n"
-        f"Limit: {limit}\n\n"
-        "[italic]Implementation coming in next phase...[/italic]",
-        title="Categorization Process",
-        border_style="blue"
-    )
-    console.print(panel)
+
+
+@app.command()
+def label_emails(
+    query: str = typer.Option("is:unread", "--query", "-q", help="Gmail search query"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process"),
+    dry_run: bool = typer.Option(True, "--dry-run/--apply", help="Preview labels without applying them"),
+    types: str = typer.Option("priority,marketing,receipt", "--types", "-t", help="Classification types (comma-separated)")
+):
+    """Label emails using AI classification services."""
+    import subprocess
+    import sys
+    
+    # Build command arguments
+    cmd = [
+        sys.executable, "label_emails_cli.py", "label-custom", query,
+        "--limit", str(limit),
+        "--types", types
+    ]
+    
+    if not dry_run:
+        cmd.append("--apply")
+    
+    # Run the labeling CLI
+    try:
+        result = subprocess.run(cmd, cwd=Path(__file__).parent.parent)
+        if result.returncode != 0:
+            raise typer.Exit(result.returncode)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Operation cancelled.[/yellow]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def label_unread(
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process"),
+    dry_run: bool = typer.Option(True, "--dry-run/--apply", help="Preview labels without applying them"),
+    types: str = typer.Option("priority,marketing,receipt", "--types", "-t", help="Classification types (comma-separated)")
+):
+    """Label unread emails using AI classification."""
+    import subprocess
+    import sys
+    
+    # Build command arguments
+    cmd = [
+        sys.executable, "label_emails_cli.py", "label-unread",
+        "--limit", str(limit),
+        "--types", types
+    ]
+    
+    if not dry_run:
+        cmd.append("--apply")
+    
+    # Run the labeling CLI
+    try:
+        result = subprocess.run(cmd, cwd=Path(__file__).parent.parent)
+        if result.returncode != 0:
+            raise typer.Exit(result.returncode)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Operation cancelled.[/yellow]")
+        raise typer.Exit(1)
 
 
 @app.command()
