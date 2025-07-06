@@ -90,7 +90,8 @@ class SemanticUrgencyDetector:
         self.genuine_indicators = [
             "deadline", "meeting at", "due by", "required by",
             "needs response", "urgent request", "immediate action",
-            "time sensitive", "asap", "critical", "emergency"
+            "time sensitive", "asap", "critical", "emergency", 
+            "your order", "your account", "available balance",
         ]
         
         self.marketing_patterns = [
@@ -209,12 +210,18 @@ HIGH Priority:
 - Meeting changes or cancellations
 - Legal or compliance matters
 - Financial transactions requiring immediate attention
+- Notifications of order status changes or deliveries
+- Invoices with payment due within 48 hours
+- Something is "expiring soon" or "urgent action required"
+- Anything from the landlord or property management company
 
 MEDIUM Priority:
 - Project updates with flexible deadlines
 - Scheduled meetings (not urgent changes)
 - Regular work requests without immediate deadlines
 - Important announcements that don't require immediate action
+- Domain name renewals
+- Receipts or invoices with payment due in more than 48 hours
 
 LOW Priority:
 - Newsletters and marketing emails
