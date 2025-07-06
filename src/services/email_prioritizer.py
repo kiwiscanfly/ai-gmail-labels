@@ -27,6 +27,13 @@ class PriorityScore:
     detected_tactics: List[str] = field(default_factory=list)
     sender_reputation: float = 0.0
     needs_review: bool = False
+    is_marketing: bool = False
+    marketing_subtype: str = ""
+    marketing_confidence: float = 0.0
+    is_receipt: bool = False
+    receipt_type: str = ""
+    receipt_vendor: str = ""
+    receipt_amount: str = ""
 
 
 @dataclass
@@ -199,6 +206,8 @@ class EmailPrioritizer:
         self.cache = EmailPriorityCache()
         self.urgency_detector = SemanticUrgencyDetector()
         self.sender_profiles: Dict[str, SenderProfile] = {}
+        self.marketing_classifier = None
+        self.receipt_classifier = None
         
         # Classification prompt following spec recommendations
         self.classification_prompt = """Classify this email's priority based on these criteria:
@@ -243,9 +252,20 @@ Example: MEDIUM|0.8|Regular project update without immediate deadline
 Your response:"""
     
     async def initialize(self) -> None:
-        """Initialize the Ollama client."""
+        """Initialize the Ollama client, marketing classifier, and receipt classifier."""
         self.ollama_manager = await get_ollama_manager()
-        logger.info("Email prioritizer initialized with LLM support")
+        
+        # Initialize marketing classifier
+        from src.services.marketing_classifier import MarketingEmailClassifier
+        self.marketing_classifier = MarketingEmailClassifier()
+        await self.marketing_classifier.initialize()
+        
+        # Initialize receipt classifier
+        from src.services.receipt_classifier import ReceiptClassifier
+        self.receipt_classifier = ReceiptClassifier()
+        await self.receipt_classifier.initialize()
+        
+        logger.info("Email prioritizer initialized with LLM support, marketing and receipt classification")
     
     async def analyze_priority(self, email: EmailMessage, context: Optional[Dict[str, Any]] = None) -> PriorityScore:
         """Analyze email priority using LLM and semantic analysis."""
@@ -259,6 +279,12 @@ Your response:"""
             # Get sender reputation
             sender_profile = self._get_or_create_sender_profile(email.sender)
             
+            # Analyze marketing classification first
+            marketing_result = await self.marketing_classifier.classify_email(email)
+            
+            # Analyze receipt classification
+            receipt_result = await self.receipt_classifier.classify_receipt(email)
+            
             # Analyze urgency authenticity
             urgency_analysis = self.urgency_detector.analyze_urgency_authenticity(email)
             
@@ -267,7 +293,7 @@ Your response:"""
             
             # Combine signals for final assessment
             final_priority = self._combine_priority_signals(
-                llm_result, urgency_analysis, sender_profile, email
+                llm_result, urgency_analysis, sender_profile, email, marketing_result, receipt_result
             )
             
             # Update sender profile based on results
@@ -413,7 +439,7 @@ Your response:"""
         profile.reputation_score = max(0.0, min(1.0, base_reputation - urgency_penalty + consistency_bonus))
     
     def _combine_priority_signals(self, llm_result: Dict, urgency_analysis: Dict, 
-                                 sender_profile: SenderProfile, email: EmailMessage) -> PriorityScore:
+                                 sender_profile: SenderProfile, email: EmailMessage, marketing_result=None, receipt_result=None) -> PriorityScore:
         """Combine LLM classification with semantic analysis and sender reputation."""
         llm_priority = llm_result.get("priority", "medium")
         llm_confidence = llm_result.get("confidence", 0.5)
@@ -437,6 +463,44 @@ Your response:"""
         # Adjust based on urgency authenticity
         is_genuine = urgency_analysis.get("is_genuine", True)
         authenticity_score = urgency_analysis.get("authenticity_score", 0.5)
+        
+        # Marketing classification adjustments
+        is_marketing = False
+        marketing_subtype = ""
+        marketing_confidence = 0.0
+        
+        if marketing_result:
+            is_marketing = marketing_result.is_marketing
+            marketing_subtype = marketing_result.subtype
+            marketing_confidence = marketing_result.confidence
+            
+            # Downgrade promotional marketing emails
+            if is_marketing and marketing_result.subtype == "promotional" and final_priority == "high":
+                final_priority = "medium"
+                llm_reasoning += " (Downgraded: promotional marketing email)"
+            
+            # Low priority for general marketing
+            elif is_marketing and marketing_result.subtype in ["newsletter", "general"] and final_priority in ["high", "medium"]:
+                final_priority = "low"
+                llm_reasoning += f" (Marketing email: {marketing_result.subtype})"
+        
+        # Receipt classification adjustments
+        is_receipt = False
+        receipt_type = ""
+        receipt_vendor = ""
+        receipt_amount = ""
+        
+        if receipt_result:
+            is_receipt = receipt_result.is_receipt
+            receipt_type = receipt_result.receipt_type
+            receipt_vendor = receipt_result.vendor or ""
+            receipt_amount = receipt_result.amount or ""
+            
+            # Receipts are generally low priority unless they need action
+            if is_receipt and final_priority == "high":
+                if receipt_result.receipt_type != "refund":
+                    final_priority = "medium"
+                    llm_reasoning += f" (Receipt: {receipt_result.receipt_type})"
         
         # Downgrade marketing emails with false urgency
         if not is_genuine and final_priority == "high":
@@ -463,7 +527,14 @@ Your response:"""
             authenticity_score=authenticity_score,
             detected_tactics=urgency_analysis.get("detected_tactics", []),
             sender_reputation=sender_profile.reputation_score,
-            needs_review=needs_review
+            needs_review=needs_review,
+            is_marketing=is_marketing,
+            marketing_subtype=marketing_subtype,
+            marketing_confidence=marketing_confidence,
+            is_receipt=is_receipt,
+            receipt_type=receipt_type,
+            receipt_vendor=receipt_vendor,
+            receipt_amount=receipt_amount
         )
     
     def _apply_rule_based_fallback(self, email: EmailMessage, sender_profile: SenderProfile) -> str:
