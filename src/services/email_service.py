@@ -252,8 +252,10 @@ class EmailService:
             await self.initialize()
             
         count = 0
-        async for message in self._gmail_client.search_messages(query, max_results=limit):
-            if count >= limit:
+        # Set a reasonable default limit if none provided
+        max_results = limit if limit is not None else 1000
+        async for message in self._gmail_client.search_messages(query, max_results=max_results):
+            if limit is not None and count >= limit:
                 break
                 
             reference = EmailReference(

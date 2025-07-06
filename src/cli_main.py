@@ -1,4 +1,4 @@
-"""Command-line interface for the email categorization agent."""
+"""Unified command-line interface for the email categorization agent with tiered command structure."""
 
 import asyncio
 import time
@@ -20,9 +20,26 @@ from src.integrations.ollama_client import get_ollama_manager
 from src.integrations.gmail_client import get_gmail_client
 from src.models.agent import AgentMessage, WorkflowCheckpoint
 
+# Import new CLI command groups
+from src.cli.commands.label import priority, marketing, receipt
 
-app = typer.Typer(help="Email Categorization Agent CLI")
+app = typer.Typer(help="Email Categorization Agent - Unified CLI")
 console = Console()
+
+# Create command groups
+label_app = typer.Typer(help="Email labeling operations")
+manage_app = typer.Typer(help="Label and category management") 
+system_app = typer.Typer(help="System operations and monitoring")
+
+# Mount label subcommands
+label_app.add_typer(priority.app, name="priority", help="Priority classification")
+label_app.add_typer(marketing.app, name="marketing", help="Marketing classification")
+label_app.add_typer(receipt.app, name="receipt", help="Receipt classification")
+
+# Add command groups to main app
+app.add_typer(label_app, name="label", help="Email labeling operations")
+app.add_typer(manage_app, name="manage", help="Management operations")
+app.add_typer(system_app, name="system", help="System operations")
 
 
 @app.command()
@@ -250,64 +267,76 @@ def categorize(
 
 
 @app.command()
-def label_emails(
-    query: str = typer.Option("is:unread", "--query", "-q", help="Gmail search query"),
-    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process"),
-    dry_run: bool = typer.Option(True, "--dry-run/--apply", help="Preview labels without applying them"),
-    types: str = typer.Option("priority,marketing,receipt", "--types", "-t", help="Classification types (comma-separated)")
-):
-    """Label emails using AI classification services."""
-    import subprocess
-    import sys
-    
-    # Build command arguments
-    cmd = [
-        sys.executable, "label_emails_cli.py", "label-custom", query,
-        "--limit", str(limit),
-        "--types", types
-    ]
-    
-    if not dry_run:
-        cmd.append("--apply")
-    
-    # Run the labeling CLI
-    try:
-        result = subprocess.run(cmd, cwd=Path(__file__).parent.parent)
-        if result.returncode != 0:
-            raise typer.Exit(result.returncode)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled.[/yellow]")
-        raise typer.Exit(1)
+def info():
+    """Show information about the unified CLI system"""
+    console.print(Panel(
+        """[bold green]Email Agent Unified CLI[/bold green]
 
+This is the unified command-line interface for email classification and labeling.
+
+[bold]Available Commands:[/bold]
+• [cyan]email-agent label priority[/cyan] - Classify emails by priority (Critical/High/Medium/Low)
+• [cyan]email-agent label marketing[/cyan] - Detect marketing emails (Promotional/Newsletter/etc)
+• [cyan]email-agent label receipt[/cyan] - Identify receipts (Purchase/Subscription/etc)
+
+[bold]Target Options:[/bold]
+• [yellow]--unread[/yellow] - Process unread emails (default)
+• [yellow]--recent N[/yellow] - Process emails from last N days
+• [yellow]--query "search"[/yellow] - Use custom Gmail search
+
+[bold]Processing Options:[/bold]
+• [yellow]--dry-run[/yellow] - Preview labels without applying (default)
+• [yellow]--apply[/yellow] - Actually apply labels to Gmail
+• [yellow]--limit N[/yellow] - Process maximum N emails
+• [yellow]--detailed[/yellow] - Show detailed analysis results
+
+[bold]Examples:[/bold]
+[dim]email-agent label priority --unread --apply
+email-agent label marketing --recent 7 --dry-run
+email-agent label receipt --query "from:amazon.com" --apply[/dim]
+        """,
+        title="📧 Email Agent CLI",
+        border_style="blue"
+    ))
 
 @app.command()
-def label_unread(
-    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process"),
-    dry_run: bool = typer.Option(True, "--dry-run/--apply", help="Preview labels without applying them"),
-    types: str = typer.Option("priority,marketing,receipt", "--types", "-t", help="Classification types (comma-separated)")
-):
-    """Label unread emails using AI classification."""
-    import subprocess
-    import sys
-    
-    # Build command arguments
-    cmd = [
-        sys.executable, "label_emails_cli.py", "label-unread",
-        "--limit", str(limit),
-        "--types", types
-    ]
-    
-    if not dry_run:
-        cmd.append("--apply")
-    
-    # Run the labeling CLI
-    try:
-        result = subprocess.run(cmd, cwd=Path(__file__).parent.parent)
-        if result.returncode != 0:
-            raise typer.Exit(result.returncode)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled.[/yellow]")
-        raise typer.Exit(1)
+def migrate():
+    """Show migration guide from old CLI scripts"""
+    console.print(Panel(
+        """[bold yellow]Migration Guide[/bold yellow]
+
+The following old scripts are replaced by new tiered commands:
+
+[bold]Priority Labeling:[/bold]
+[dim]Old: python label_priority_emails.py --dry-run --limit 50
+New: email-agent label priority --unread --dry-run --limit 50[/dim]
+
+[bold]Marketing Classification:[/bold]
+[dim]Old: python label_marketing_emails.py --detailed --sender-stats
+New: email-agent label marketing --unread --detailed --sender-analysis[/dim]
+
+[bold]Receipt Detection:[/bold]
+[dim]Old: python label_receipt_emails.py --vendor-stats
+New: email-agent label receipt --unread --vendor-stats[/dim]
+
+[bold]Combined Labeling:[/bold]
+[dim]Old: python label_emails_cli.py label-unread --types priority,marketing --apply
+New: Run each classifier separately:
+    email-agent label priority --unread --apply
+    email-agent label marketing --unread --apply[/dim]
+
+[bold green]Benefits of the new CLI:[/bold green]
+✓ Consistent command structure
+✓ Better help documentation
+✓ Improved error handling
+✓ Rich console output with progress bars
+✓ More granular control over each classifier
+
+[bold]Note:[/bold] All old scripts remain functional during the transition period.
+        """,
+        title="🔄 Migration Guide",
+        border_style="green"
+    ))
 
 
 @app.command()
