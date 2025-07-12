@@ -88,9 +88,19 @@ class CustomLabelCommand(BaseEmailProcessor):
             query = " OR ".join(query_parts)
             self.console.print(f"[blue]Searching entire mailbox with terms: {query}[/blue]")
         else:
-            # Use the target specification
-            query = self._parse_target(target)
-            self.console.print(f"[blue]Searching {target} emails[/blue]")
+            # Combine target specification with search terms
+            base_query = self._parse_target(target)
+            # Create search query with terms
+            term_queries = [f'"{term}"' for term in search_terms[:5]]  # Use top 5 terms to avoid query length issues
+            terms_query = f"({' OR '.join(term_queries)})"
+            
+            # Combine with target
+            if base_query:
+                query = f"{base_query} {terms_query}"
+            else:
+                query = terms_query
+            
+            self.console.print(f"[blue]Searching {target} emails that match: {', '.join(search_terms[:5])}[/blue]")
         
         # Process emails
         emails = await self.process_emails(query, limit, dry_run)
@@ -288,10 +298,11 @@ class CustomLabelCommand(BaseEmailProcessor):
 @app.command()
 def create(
     category: str = typer.Argument(..., help="Category name for custom labeling"),
+    target: str = typer.Option("unread", "--target", "-t", help="Email target: unread, all, recent:7days, from:sender, query:..."),
     search_terms: Optional[str] = typer.Option(None, "--search-terms", "-s", help="Comma-separated search terms (will generate if not provided)"),
     parent_label: Optional[str] = typer.Option(None, "--parent-label", "-p", help="Parent label for hierarchical organization"),
-    search_existing: bool = typer.Option(False, "--search-existing", help="Search entire mailbox with generated terms"),
-    confidence_threshold: float = typer.Option(0.7, "--confidence-threshold", "-c", help="Minimum confidence for labeling"),
+    search_existing: bool = typer.Option(False, "--search-existing", help="Search entire mailbox with generated terms (ignores target)"),
+    confidence_threshold: float = typer.Option(0.6, "--confidence-threshold", "-c", help="Minimum confidence for labeling"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview labels without applying them (default: apply labels)"),
     limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
     detailed: bool = typer.Option(False, "--detailed", help="Show detailed classification results")
@@ -310,7 +321,7 @@ def create(
         
         results = await command.execute_classification(
             category=category,
-            target="unread" if not search_existing else "all",
+            target=target if not search_existing else "all",
             search_terms=terms_list,
             generate_terms=not search_terms,  # Generate if not provided
             parent_label=parent_label,

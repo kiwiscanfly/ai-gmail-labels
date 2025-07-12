@@ -1,6 +1,28 @@
-# Email Categorization Agent (Coded using AI)
+# EXPERIMENTAL: Email Categorization Agent (Coded using AI)
 
 An AI-powered email categorization system using local LLMs and multi-agent architecture, designed to automatically organize Gmail emails with privacy-first local processing.
+
+## Quick Command Reference
+
+```bash
+# First-time setup
+uv email-agent system install
+
+# Apply all classifiers to unread emails
+uv email-agent label all unread --limit 20
+
+# Check email priority (preview mode)
+uv email-agent label priority unread --dry-run
+
+# Detect marketing emails from last week
+uv email-agent label marketing recent 7
+
+# Create custom category with AI
+uv email-agent label custom create 'programming' --generate-terms
+
+# View system status
+uv email-agent status
+```
 
 ## Features
 
@@ -90,6 +112,28 @@ cp .env.example .env
 
 ### Usage
 
+#### Getting Started
+
+1. **First Time Setup**:
+   ```bash
+   # Run the interactive setup wizard
+   uv run email-agent system install
+   ```
+
+2. **Basic Email Classification**:
+   ```bash
+   # Apply all classifiers to unread emails
+   uv run email-agent label all unread
+   
+   # Preview what would happen without applying labels
+   uv run email-agent label all unread --dry-run
+   ```
+
+3. **Check System Status**:
+   ```bash
+   uv run email-agent status
+   ```
+
 #### With Claude Desktop (MCP)
 
 Add to your Claude Desktop configuration:
@@ -113,40 +157,86 @@ Add to your Claude Desktop configuration:
 # Run any CLI command with uv
 uv run email-agent <command>
 
-# Examples:
-uv run email-agent label all unread --limit 20
-uv run email-agent label priority unread --dry-run
-uv run email-agent label notifications recent 7
-
 # Or activate the virtual environment first
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-email-agent label all unread
+email-agent <command>
 
 # Start the MCP server
 uv run python -m src.mcp.server
 ```
 
-## CLI Usage
+## CLI Command Structure
 
-The unified CLI provides comprehensive email classification and labeling capabilities through a tiered command structure.
+The email-agent CLI follows a hierarchical command structure similar to AWS CLI:
 
-### Basic Command Structure
-
-```bash
-email-agent <command_group> <command> [options]
+```
+email-agent
+├── label               # Email classification commands
+│   ├── all            # Apply all classifiers
+│   ├── priority       # Priority classification
+│   ├── marketing      # Marketing detection
+│   ├── receipt        # Receipt identification
+│   ├── notifications  # Notification classification
+│   └── custom         # Custom categories
+├── manage             # Management operations
+│   ├── labels         # Gmail label management
+│   ├── categories     # Custom category management
+│   └── stats          # Analytics and reports
+├── system             # System operations
+│   └── install        # Setup wizard
+├── status             # Check system health
+├── config             # Configuration management
+└── info               # CLI information
 ```
 
-### Available Commands
+### Basic Command Syntax
 
-#### Email Labeling Commands (`email-agent label`)
+```bash
+email-agent [COMMAND_GROUP] [COMMAND] [TARGET] [OPTIONS]
+```
+
+Examples:
+```bash
+email-agent label priority unread --dry-run
+            ^^^^^ ^^^^^^^^ ^^^^^^ ^^^^^^^^^^
+            group command  target option
+
+email-agent manage labels list
+            ^^^^^^ ^^^^^^ ^^^^
+            group  command action
+```
+
+## Complete Command Reference
+
+### Email Labeling Commands (`email-agent label`)
 
 | Command | Description | Gmail Labels Created |
 |---------|-------------|---------------------|
-| `email-agent label all` | Apply all classifiers in one pass | All label types below |
-| `email-agent label priority` | Classify emails by priority level | `Priority/Critical`, `Priority/High`, `Priority/Medium`, `Priority/Low` |
-| `email-agent label marketing` | Detect and categorize marketing emails | `Marketing/Promotional`, `Marketing/Newsletter`, `Marketing/Hybrid`, `Marketing/General` |
-| `email-agent label receipt` | Identify and categorize receipts | `Receipts/Purchase`, `Receipts/Service`, `Receipts/Other` |
-| `email-agent label notifications` | Classify system and service notifications | `Notifications/System`, `Notifications/Update`, `Notifications/Alert`, `Notifications/Reminder`, `Notifications/Security` |
+| `label all` | Apply all classifiers in one pass | All label types below |
+| `label priority` | Classify emails by priority level | `Priority/Critical`, `Priority/High`, `Priority/Medium`, `Priority/Low` |
+| `label marketing` | Detect and categorize marketing emails | `Marketing/Promotional`, `Marketing/Newsletter`, `Marketing/Hybrid`, `Marketing/General` |
+| `label receipt` | Identify and categorize receipts | `Receipts/Purchase`, `Receipts/Service`, `Receipts/Other` |
+| `label notifications` | Classify system and service notifications | `Notifications/System`, `Notifications/Update`, `Notifications/Alert`, `Notifications/Reminder`, `Notifications/Security` |
+| `label custom` | Create custom categories with AI | User-defined labels |
+
+### Management Commands (`email-agent manage`)
+
+| Command | Description | Actions Available |
+|---------|-------------|-------------------|
+| `manage labels` | Gmail label operations | `list`, `create`, `delete`, `analyze` |
+| `manage categories` | Custom category management | `list`, `create`, `train`, `export`, `import` |
+| `manage stats` | Analytics and reporting | `classification`, `senders`, `labels`, `usage` |
+
+### System Commands
+
+| Command | Description | Purpose |
+|---------|-------------|---------|
+| `system install` | Interactive setup wizard | First-time configuration |
+| `status` | System health check | Verify connections and services |
+| `config` | Configuration management | View/edit settings |
+| `info` | CLI information | Detailed help and examples |
+| `test-gmail` | Test Gmail connection | Verify OAuth and API access |
+| `test-ollama` | Test Ollama integration | Check model availability |
 
 #### Target Options
 
@@ -165,25 +255,51 @@ All labeling commands support these target options:
 | `--confidence-threshold N` | Minimum confidence for labeling (0.0-1.0) | 0.7 |
 | `--detailed` | Show detailed analysis results | False |
 
-### Usage Examples
+## Common Workflows
 
-#### Basic Classification
-
+### Daily Email Processing
 ```bash
-# Apply all classifiers to unread emails
-email-agent label all unread
+# Morning routine - process all unread emails
+email-agent label all unread --limit 100
 
-# Classify priority for recent emails (dry run)
-email-agent label priority recent 7 --dry-run
+# Evening check - process today's emails
+email-agent label all recent 1
+```
 
-# Detect marketing emails with high confidence
-email-agent label marketing unread --confidence-threshold 0.8
+### First-Time User Flow
+```bash
+# 1. Initial setup
+email-agent system install
 
-# Process receipts from specific sender
-email-agent label receipt query "from:amazon.com"
+# 2. Check system is working
+email-agent status
 
-# Classify notifications with detailed output
-email-agent label notifications unread --detailed
+# 3. Preview what will happen (dry run)
+email-agent label all unread --dry-run --limit 10
+
+# 4. Process emails when comfortable
+email-agent label all unread --limit 50
+```
+
+### Focused Classification
+```bash
+# Just priority classification for important senders
+email-agent label priority query "from:boss@company.com OR from:client@important.com"
+
+# Marketing emails from specific time period
+email-agent label marketing recent 30 --dry-run
+
+# Process all receipts for expense tracking
+email-agent label receipt query "subject:receipt OR subject:invoice OR subject:order"
+```
+
+### Custom Category Creation
+```bash
+# Create a "Work Projects" category
+email-agent label custom create "work projects" --generate-terms
+
+# Create a "Financial" category with specific terms
+email-agent label custom create "financial" --search-terms "bank,statement,invoice,payment"
 ```
 
 #### Advanced Usage
@@ -283,6 +399,56 @@ All classifiers use confidence scores (0.0 to 1.0) to determine label applicatio
 3. **Adjust confidence thresholds** based on your accuracy preferences
 4. **Use specific queries** to target relevant emails more efficiently
 5. **Process in batches** for large email volumes
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+**No output when running commands:**
+```bash
+# Check if the system is properly installed
+email-agent status
+
+# Run with verbose output
+email-agent label all unread --detailed
+```
+
+**"Command not found" error:**
+```bash
+# Make sure you're using uv run
+uv run email-agent status
+
+# Or activate the virtual environment
+source .venv/bin/activate
+email-agent status
+```
+
+**Gmail authentication errors:**
+```bash
+# Re-authenticate with Gmail
+email-agent test-gmail
+
+# Check credentials file exists
+ls -la credentials.json
+```
+
+**Ollama connection errors:**
+```bash
+# Verify Ollama is running
+ollama list
+
+# Test Ollama integration
+email-agent test-ollama
+```
+
+**No emails being processed:**
+```bash
+# Check your search query
+email-agent label all query "is:unread" --dry-run
+
+# Verify Gmail access
+email-agent gmail list --limit 5
+```
 
 ### System Commands
 
@@ -391,6 +557,41 @@ For issues and questions:
 - Review existing [issues](https://github.com/user/email-agents/issues)
 - Create a new issue if needed
 
+## Command Cheat Sheet
+
+### Essential Commands
+```bash
+# Setup and Configuration
+email-agent system install              # First-time setup
+email-agent status                      # Check system health
+email-agent config                      # View/edit configuration
+
+# Basic Email Processing
+email-agent label all unread            # Process all unread emails
+email-agent label all unread --dry-run  # Preview without applying
+email-agent label all recent 7          # Process last 7 days
+
+# Specific Classifications
+email-agent label priority unread       # Just priority labels
+email-agent label marketing unread      # Just marketing labels
+email-agent label receipt unread        # Just receipt labels
+email-agent label notifications unread  # Just notification labels
+
+# Custom Categories
+email-agent label custom create "work"  # Create custom category
+email-agent label custom list           # List custom categories
+
+# Management
+email-agent manage labels list          # List all Gmail labels
+email-agent manage stats classification # View performance stats
+
+# Testing and Debugging
+email-agent test-gmail                  # Test Gmail connection
+email-agent test-ollama                 # Test AI models
+email-agent --help                      # General help
+email-agent label --help                # Label command help
+```
+
 ## Roadmap
 
 - [ ] Multi-account support
@@ -398,3 +599,6 @@ For issues and questions:
 - [ ] Attachment analysis
 - [ ] Export/import functionality
 - [ ] Cloud deployment options
+- [ ] Real-time email processing
+- [ ] Web interface
+- [ ] Mobile app integration

@@ -203,8 +203,12 @@ class GmailClient:
     
     # Label Management
     
-    async def _refresh_labels_cache(self) -> None:
-        """Refresh the labels cache."""
+    async def _refresh_labels_cache(self, include_stats: bool = False) -> None:
+        """Refresh the labels cache.
+        
+        Args:
+            include_stats: Whether to fetch detailed message statistics for each label
+        """
         try:
             response = await self._api_request(self.service.users().labels().list, userId='me')
             
@@ -224,20 +228,59 @@ class GmailClient:
                 )
                 self.labels_cache[label.name] = label
             
-            logger.debug("Labels cache refreshed", label_count=len(self.labels_cache))
+            # Fetch detailed statistics if requested
+            if include_stats:
+                await self._fetch_label_statistics()
+            
+            logger.debug("Labels cache refreshed", label_count=len(self.labels_cache), include_stats=include_stats)
             
         except Exception as e:
             logger.error("Failed to refresh labels cache", error=str(e))
             raise GmailAPIError(f"Failed to refresh labels cache: {e}")
     
-    async def list_labels(self) -> List[GmailLabel]:
+    async def _fetch_label_statistics(self) -> None:
+        """Fetch detailed statistics for all labels."""
+        try:
+            # Fetch detailed label information for each label
+            for label_name, label in self.labels_cache.items():
+                try:
+                    # Get detailed label info from Gmail API
+                    label_response = await self._api_request(
+                        self.service.users().labels().get,
+                        userId='me',
+                        id=label.id
+                    )
+                    
+                    # Update the cached label with statistics
+                    label.messages_total = label_response.get('messagesTotal', 0)
+                    label.messages_unread = label_response.get('messagesUnread', 0)
+                    label.threads_total = label_response.get('threadsTotal', 0)
+                    label.threads_unread = label_response.get('threadsUnread', 0)
+                    
+                except Exception as e:
+                    logger.warning(f"Could not fetch stats for label {label_name}", error=str(e))
+                    continue
+                    
+                # Rate limiting - small delay between requests
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.error("Failed to fetch label statistics", error=str(e))
+    
+    async def list_labels(self, include_stats: bool = False) -> List[GmailLabel]:
         """List all Gmail labels.
+        
+        Args:
+            include_stats: Whether to include message count statistics
         
         Returns:
             List of GmailLabel objects.
         """
         if not self.labels_cache:
-            await self._refresh_labels_cache()
+            await self._refresh_labels_cache(include_stats=include_stats)
+        elif include_stats:
+            # If cache exists but we need stats, fetch them
+            await self._fetch_label_statistics()
         return list(self.labels_cache.values())
     
     async def get_label_by_name(self, name: str) -> Optional[GmailLabel]:

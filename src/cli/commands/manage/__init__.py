@@ -1,4 +1,5 @@
 """Management command implementations."""
 
-# Placeholder for future management commands
-__all__ = []
+from . import labels, categories, stats
+
+__all__ = ["labels", "categories", "stats"]

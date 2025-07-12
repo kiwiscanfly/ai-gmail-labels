@@ -205,8 +205,11 @@ class EmailService:
             )
             return False
     
-    async def get_labels(self) -> List[GmailLabel]:
+    async def get_labels(self, include_stats: bool = False) -> List[GmailLabel]:
         """Get all available Gmail labels.
+        
+        Args:
+            include_stats: Whether to include message count statistics
         
         Returns:
             List of Gmail labels
@@ -214,7 +217,7 @@ class EmailService:
         if not self._initialized:
             await self.initialize()
             
-        return await self._gmail_client.list_labels()
+        return await self._gmail_client.list_labels(include_stats=include_stats)
     
     async def create_label(self, name: str) -> Optional[GmailLabel]:
         """Create a new Gmail label.

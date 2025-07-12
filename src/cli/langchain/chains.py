@@ -223,6 +223,53 @@ class EmailRouterChain:
             ollama_manager: Ollama client manager for LLM interactions
         """
         self.ollama_manager = ollama_manager
+        self._init_heuristic_patterns()
+    
+    def _init_heuristic_patterns(self):
+        """Initialize heuristic patterns for fast routing decisions."""
+        # Marketing indicators
+        self.marketing_keywords = {
+            'unsubscribe', 'newsletter', 'promotion', 'sale', 'discount', 
+            'offer', 'deal', 'marketing', 'campaign', 'subscribe', 'promo',
+            'exclusive', 'limited time', 'buy now', 'click here', 'free shipping'
+        }
+        self.marketing_senders = {
+            'noreply', 'no-reply', 'marketing', 'newsletter', 'promo', 
+            'notifications', 'updates', 'news'
+        }
+        
+        # Receipt indicators
+        self.receipt_keywords = {
+            'receipt', 'invoice', 'payment', 'order', 'purchase', 'transaction',
+            'confirmation', 'billing', 'charged', 'refund', 'shipped', 'delivery',
+            'total', 'amount', 'paid', 'subscription', 'renewal'
+        }
+        self.receipt_senders = {
+            'amazon', 'paypal', 'stripe', 'apple', 'google', 'microsoft',
+            'billing', 'payments', 'orders', 'receipts'
+        }
+        
+        # Priority indicators
+        self.priority_keywords = {
+            'urgent', 'asap', 'immediate', 'critical', 'important', 'deadline',
+            'emergency', 'action required', 'time sensitive', 'priority',
+            'meeting', 'schedule', 'cancel', 'reschedule', 'approval needed'
+        }
+        self.priority_senders = {
+            'boss', 'manager', 'ceo', 'admin', 'support', 'security',
+            'alerts', 'urgent', 'critical'
+        }
+        
+        # Notification indicators
+        self.notification_keywords = {
+            'alert', 'notification', 'reminder', 'update', 'status', 'report',
+            'backup', 'security', 'maintenance', 'system', 'automated',
+            'service', 'monitor', 'error', 'warning', 'success'
+        }
+        self.notification_senders = {
+            'noreply', 'no-reply', 'system', 'admin', 'alerts', 'notifications',
+            'monitoring', 'security', 'backup', 'automated'
+        }
     
     async def route_email(self, email: EmailMessage) -> List[str]:
         """Determine which classification services should process an email.
@@ -234,45 +281,139 @@ class EmailRouterChain:
             List of service names that should process this email
         """
         try:
-            # Prepare email snippet for analysis
-            snippet = ""
-            if email.body_text:
-                snippet = email.body_text[:300]
-            elif email.body_html:
-                # Simple HTML to text conversion
-                snippet = re.sub(r'<[^>]+>', ' ', email.body_html[:300])
+            # Start with heuristic routing for efficiency
+            heuristic_services = self._heuristic_route(email)
             
-            prompt = EMAIL_ROUTING_PROMPT.format(
-                subject=email.subject or "No subject",
-                sender=email.sender or "Unknown sender", 
-                snippet=snippet
-            )
+            # If heuristics give us confident results, use them
+            if len(heuristic_services) > 0:
+                logger.debug(
+                    "Used heuristic routing",
+                    email_id=email.id,
+                    subject=email.subject[:50] if email.subject else "No subject",
+                    services=heuristic_services
+                )
+                return heuristic_services
             
-            response = await self.ollama_manager.chat(
-                messages=[{"role": "user", "content": prompt}],
-                options={
-                    "temperature": 0.2,
-                    "top_p": 0.9,
-                    "num_predict": 100
-                }
-            )
-            
-            # Parse the response to extract service names
-            services = self._parse_routing_response(response.content)
+            # Fall back to LLM routing for ambiguous cases
+            llm_services = await self._llm_route(email)
             
             logger.debug(
-                "Routed email to services",
-                email_id=email.id,
+                "Used LLM routing",
+                email_id=email.id, 
                 subject=email.subject[:50] if email.subject else "No subject",
-                services=services
+                services=llm_services
             )
             
-            return services
+            return llm_services
             
         except Exception as e:
             logger.error("Failed to route email", email_id=email.id, error=str(e))
             # Default routing - apply priority to all emails
             return ["priority"]
+    
+    def _heuristic_route(self, email: EmailMessage) -> List[str]:
+        """Use fast heuristic patterns to route emails.
+        
+        Args:
+            email: Email to analyze
+            
+        Returns:
+            List of services based on heuristic analysis
+        """
+        services = []
+        
+        # Prepare text for analysis
+        subject_lower = (email.subject or "").lower()
+        sender_lower = (email.sender or "").lower()
+        body_text = (email.body_text or "")[:500].lower()
+        
+        combined_text = f"{subject_lower} {body_text}"
+        
+        # Check for receipt indicators (high confidence)
+        if (any(keyword in combined_text for keyword in self.receipt_keywords) or
+            any(sender in sender_lower for sender in self.receipt_senders)):
+            services.append("receipt")
+            
+        # Check for marketing indicators (high confidence)
+        if (any(keyword in combined_text for keyword in self.marketing_keywords) or
+            any(sender in sender_lower for sender in self.marketing_senders) or
+            'unsubscribe' in body_text):
+            services.append("marketing")
+            
+        # Check for notification indicators
+        if (any(keyword in combined_text for keyword in self.notification_keywords) or
+            any(sender in sender_lower for sender in self.notification_senders)):
+            services.append("notifications")
+            
+        # Check for priority indicators
+        if (any(keyword in combined_text for keyword in self.priority_keywords) or
+            any(sender in sender_lower for sender in self.priority_senders)):
+            services.append("priority")
+        
+        # Always include priority unless it's clearly just a receipt or marketing
+        if not services or (len(services) == 1 and services[0] in ["receipt", "marketing"]):
+            if "priority" not in services:
+                services.append("priority")
+        
+        return services
+    
+    def _is_ambiguous(self, email: EmailMessage) -> bool:
+        """Determine if an email needs LLM analysis due to ambiguity.
+        
+        Args:
+            email: Email to check
+            
+        Returns:
+            True if email is ambiguous and needs LLM routing
+        """
+        # Simple heuristics to detect ambiguous cases
+        subject = (email.subject or "").lower()
+        
+        # Very short subjects are often ambiguous
+        if len(subject) < 10:
+            return True
+            
+        # Subjects with only common words
+        common_words = {'re:', 'fwd:', 'hello', 'hi', 'thanks', 'update', 'info'}
+        if any(word in subject for word in common_words) and len(subject) < 30:
+            return True
+            
+        return False
+    
+    async def _llm_route(self, email: EmailMessage) -> List[str]:
+        """Use LLM for intelligent routing of ambiguous emails.
+        
+        Args:
+            email: Email to analyze
+            
+        Returns:
+            List of services from LLM analysis
+        """
+        # Prepare email snippet for analysis
+        snippet = ""
+        if email.body_text:
+            snippet = email.body_text[:300]
+        elif email.body_html:
+            # Simple HTML to text conversion
+            snippet = re.sub(r'<[^>]+>', ' ', email.body_html[:300])
+        
+        prompt = EMAIL_ROUTING_PROMPT.format(
+            subject=email.subject or "No subject",
+            sender=email.sender or "Unknown sender", 
+            snippet=snippet
+        )
+        
+        response = await self.ollama_manager.chat(
+            messages=[{"role": "user", "content": prompt}],
+            options={
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "num_predict": 100
+            }
+        )
+        
+        # Parse the response to extract service names
+        return self._parse_routing_response(response.content)
     
     def _parse_routing_response(self, response: str) -> List[str]:
         """Parse the routing response to extract service names.
