@@ -1,5 +1,5 @@
 """Label command implementations."""
 
-from . import priority, marketing, receipt
+from . import priority, marketing, receipt, notifications
 
-__all__ = ["priority", "marketing", "receipt"]
+__all__ = ["priority", "marketing", "receipt", "notifications"]

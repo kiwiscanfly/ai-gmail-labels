@@ -1,4 +1,4 @@
-# Email Categorization Agent
+# Email Categorization Agent (Coded using AI)
 
 An AI-powered email categorization system using local LLMs and multi-agent architecture, designed to automatically organize Gmail emails with privacy-first local processing.
 
@@ -6,6 +6,7 @@ An AI-powered email categorization system using local LLMs and multi-agent archi
 
 - **Local AI Processing**: Uses Ollama models for privacy-preserving email categorization
 - **Multi-Agent Architecture**: Specialized agents for different tasks (retrieval, analysis, labeling)
+- **Unified CLI**: Comprehensive command-line interface for email classification and management
 - **MCP Integration**: Seamless integration with Claude via Model Context Protocol
 - **Interactive Mode**: Smart fallback to user interaction for ambiguous cases
 - **Real-time Processing**: Push notifications for immediate email handling
@@ -15,7 +16,7 @@ An AI-powered email categorization system using local LLMs and multi-agent archi
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    MCP Server Interface                      │
+│          CLI Interface + MCP Server Interface               │
 ├─────────────────────────────────────────────────────────────┤
 │                  Orchestration Agent (LangGraph)             │
 ├─────────────┬───────────┬────────────┬─────────────────────┤
@@ -23,6 +24,9 @@ An AI-powered email categorization system using local LLMs and multi-agent archi
 │  Retrieval   │  Analysis  │  API      │  Agent             │
 │  Agent       │  Agent     │  Agent    │                     │
 ├─────────────┴───────────┴────────────┴─────────────────────┤
+│    Classification Services (Priority, Marketing, Receipt,   │
+│                 Notifications, Custom)                      │
+├─────────────────────────────────────────────────────────────┤
 │                 Event Bus (SQLite)                          │
 ├─────────────────────────────────────────────────────────────┤
 │         State Management (SQLite)                           │
@@ -103,20 +107,199 @@ Add to your Claude Desktop configuration:
 }
 ```
 
-#### Direct Usage
+#### Direct CLI Usage
 
 ```bash
-# Activate the virtual environment
+# Run any CLI command with uv
+uv run email-agent <command>
+
+# Examples:
+uv run email-agent label all unread --limit 20
+uv run email-agent label priority unread --dry-run
+uv run email-agent label notifications recent 7
+
+# Or activate the virtual environment first
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+email-agent label all unread
 
 # Start the MCP server
 uv run python -m src.mcp.server
+```
 
-# Or use the CLI interface
-uv run email-agent categorize --mode interactive
+## CLI Usage
 
-# Or run directly with uv
-uv run python -m src.cli categorize --mode interactive
+The unified CLI provides comprehensive email classification and labeling capabilities through a tiered command structure.
+
+### Basic Command Structure
+
+```bash
+email-agent <command_group> <command> [options]
+```
+
+### Available Commands
+
+#### Email Labeling Commands (`email-agent label`)
+
+| Command | Description | Gmail Labels Created |
+|---------|-------------|---------------------|
+| `email-agent label all` | Apply all classifiers in one pass | All label types below |
+| `email-agent label priority` | Classify emails by priority level | `Priority/Critical`, `Priority/High`, `Priority/Medium`, `Priority/Low` |
+| `email-agent label marketing` | Detect and categorize marketing emails | `Marketing/Promotional`, `Marketing/Newsletter`, `Marketing/Hybrid`, `Marketing/General` |
+| `email-agent label receipt` | Identify and categorize receipts | `Receipts/Purchase`, `Receipts/Service`, `Receipts/Other` |
+| `email-agent label notifications` | Classify system and service notifications | `Notifications/System`, `Notifications/Update`, `Notifications/Alert`, `Notifications/Reminder`, `Notifications/Security` |
+
+#### Target Options
+
+All labeling commands support these target options:
+
+- **`unread`** - Process unread emails (default)
+- **`recent N`** - Process emails from the last N days
+- **`query "search"`** - Use custom Gmail search query
+
+#### Common Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--dry-run` | Preview labels without applying them | Apply labels |
+| `--limit N` | Maximum number of emails to process | 50 |
+| `--confidence-threshold N` | Minimum confidence for labeling (0.0-1.0) | 0.7 |
+| `--detailed` | Show detailed analysis results | False |
+
+### Usage Examples
+
+#### Basic Classification
+
+```bash
+# Apply all classifiers to unread emails
+email-agent label all unread
+
+# Classify priority for recent emails (dry run)
+email-agent label priority recent 7 --dry-run
+
+# Detect marketing emails with high confidence
+email-agent label marketing unread --confidence-threshold 0.8
+
+# Process receipts from specific sender
+email-agent label receipt query "from:amazon.com"
+
+# Classify notifications with detailed output
+email-agent label notifications unread --detailed
+```
+
+#### Advanced Usage
+
+```bash
+# Combined classification with custom confidence thresholds
+email-agent label all unread \
+  --priority-confidence 0.8 \
+  --marketing-confidence 0.7 \
+  --receipt-confidence 0.9 \
+  --notifications-confidence 0.6
+
+# Process specific time range
+email-agent label all recent 30 --limit 100
+
+# Custom search with multiple criteria
+email-agent label priority query "is:important OR from:boss@company.com" --limit 20
+
+# Preview mode for testing
+email-agent label all unread --dry-run --detailed
+```
+
+### Classification Types
+
+#### Priority Classification
+Analyzes email importance and urgency:
+- **Critical**: Urgent emails requiring immediate attention
+- **High**: Important emails that should be prioritized
+- **Medium**: Standard importance emails
+- **Low**: Less important, informational emails
+
+#### Marketing Classification
+Detects commercial and promotional emails:
+- **Promotional**: Sales, offers, discounts
+- **Newsletter**: Regular newsletters and updates
+- **Hybrid**: Mixed content (promotional + informational)
+- **General**: Other marketing content
+
+#### Receipt Classification
+Identifies transaction confirmations and receipts:
+- **Purchase**: Product purchases, orders, deliveries
+- **Service**: Service payments, subscriptions, utilities
+- **Other**: Other transaction types
+
+#### Notification Classification
+Categorizes system and service notifications:
+- **System**: Platform maintenance, service status
+- **Update**: Software updates, new features
+- **Alert**: Warnings, important notices
+- **Reminder**: Appointments, deadlines, tasks
+- **Security**: Account security, login alerts
+
+### Gmail Label Structure
+
+The CLI creates a hierarchical label structure in Gmail:
+
+```
+Priority/
+├── Critical
+├── High
+├── Medium
+└── Low
+
+Marketing/
+├── Promotional
+├── Newsletter
+├── Hybrid
+└── General
+
+Receipts/
+├── Purchase
+├── Service
+└── Other
+
+Notifications/
+├── System
+├── Update
+├── Alert
+├── Reminder
+└── Security
+```
+
+### Confidence Thresholds
+
+All classifiers use confidence scores (0.0 to 1.0) to determine label application:
+
+- **0.9-1.0**: Very high confidence
+- **0.8-0.9**: High confidence
+- **0.7-0.8**: Good confidence (default threshold)
+- **0.6-0.7**: Moderate confidence
+- **Below 0.6**: Low confidence (typically not labeled)
+
+### Performance Tips
+
+1. **Use `--dry-run` first** to preview results before applying labels
+2. **Set appropriate limits** with `--limit` to avoid processing too many emails at once
+3. **Adjust confidence thresholds** based on your accuracy preferences
+4. **Use specific queries** to target relevant emails more efficiently
+5. **Process in batches** for large email volumes
+
+### System Commands
+
+Additional system management commands are available:
+
+```bash
+# Show system status
+email-agent status
+
+# Test Gmail connection
+email-agent test-gmail
+
+# Configure settings
+email-agent config
+
+# Show CLI information
+email-agent info
 ```
 
 ## Configuration
@@ -134,11 +317,20 @@ Configuration is managed through YAML files and environment variables:
 ```
 email-agents/
 ├── src/
-│   ├── agents/         # Individual agent implementations
+│   ├── cli/           # Command-line interface
+│   │   ├── commands/  # CLI command implementations
+│   │   │   └── label/ # Email labeling commands
+│   │   └── base.py    # Base CLI classes
+│   ├── services/      # Classification services
+│   │   ├── email_prioritizer.py
+│   │   ├── marketing_classifier.py
+│   │   ├── receipt_classifier.py
+│   │   └── notifications_classifier.py
+│   ├── agents/        # Individual agent implementations
 │   ├── core/          # Core system components
 │   ├── integrations/  # External service integrations
 │   ├── mcp/           # MCP server implementation
-│   └── utils/         # Utility functions
+│   └── models/        # Data models
 ├── tests/             # Test suite
 ├── config/            # Configuration files
 ├── data/              # Database and state files

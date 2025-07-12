@@ -16,13 +16,21 @@ class OllamaConfig(BaseModel):
     """Ollama LLM configuration."""
     host: str = "http://localhost:11434"
     models: Dict[str, str] = Field(default_factory=lambda: {
-        "primary": "gemma2:3b",
+        "primary": "gemma3:4b",
         "fallback": "llama3.2:3b",
         "reasoning": "llama3.2:3b"
     })
     timeout: int = 60
     max_retries: int = 3
     keep_alive: bool = True
+
+
+class LLMConfig(BaseModel):
+    """LLM generation parameters."""
+    temperature: float = 0.1
+    top_p: float = 0.95
+    num_predict: int = 100
+    max_tokens: int = 150
 
 
 class GmailConfig(BaseModel):
@@ -40,6 +48,26 @@ class GmailConfig(BaseModel):
     })
 
 
+class EmailConfig(BaseModel):
+    """Email processing configuration."""
+    default_limit: int = 50
+    max_results: int = 1000
+    cache_ttl: int = 3600
+    cache_max_size: int = 1000
+
+
+class ClassificationConfig(BaseModel):
+    """Classification threshold configuration."""
+    priority: Dict[str, float] = Field(default_factory=lambda: {
+        "high_confidence": 0.8,
+        "medium_confidence": 0.6
+    })
+    marketing_threshold: float = 0.7
+    receipt_threshold: float = 0.7
+    notifications_threshold: float = 0.7
+    custom_threshold: float = 0.7
+
+
 class CategorizationConfig(BaseModel):
     """Email categorization configuration."""
     confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
@@ -51,8 +79,17 @@ class SQLiteConfig(BaseModel):
     """SQLite database configuration."""
     database_path: str = "./data/agent_state.db"
     connection_pool_size: int = 5
+    pool_timeout: float = 10.0
+    max_overflow: int = 10
     busy_timeout: int = 30000  # milliseconds
     journal_mode: str = "WAL"
+
+
+class StorageConfig(BaseModel):
+    """Email storage configuration."""
+    cache_expiry: int = 3600
+    max_email_size: int = 10485760  # 10MB
+    compression_enabled: bool = True
 
 
 class StateConfig(BaseModel):
@@ -129,9 +166,13 @@ class Config(BaseSettings):
     
     app: AppConfig = Field(default_factory=AppConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     gmail: GmailConfig = Field(default_factory=GmailConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
+    classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     categorization: CategorizationConfig = Field(default_factory=CategorizationConfig)
     sqlite: SQLiteConfig = Field(default_factory=SQLiteConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

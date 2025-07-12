@@ -21,7 +21,8 @@ from src.integrations.gmail_client import get_gmail_client
 from src.models.agent import AgentMessage, WorkflowCheckpoint
 
 # Import new CLI command groups
-from src.cli.commands.label import priority, marketing, receipt
+from src.cli.commands.label import priority, marketing, receipt, notifications, all as all_commands, custom
+from src.cli.commands.system import install
 
 app = typer.Typer(help="Email Categorization Agent - Unified CLI")
 console = Console()
@@ -35,6 +36,12 @@ system_app = typer.Typer(help="System operations and monitoring")
 label_app.add_typer(priority.app, name="priority", help="Priority classification")
 label_app.add_typer(marketing.app, name="marketing", help="Marketing classification")
 label_app.add_typer(receipt.app, name="receipt", help="Receipt classification")
+label_app.add_typer(notifications.app, name="notifications", help="Notifications classification")
+label_app.add_typer(all_commands.app, name="all", help="Combined classification (all classifiers)")
+label_app.add_typer(custom.app, name="custom", help="Custom category classification with AI-powered search terms")
+
+# Mount system subcommands
+system_app.add_typer(install.app, name="install", help="Install and configure the email-agents system")
 
 # Add command groups to main app
 app.add_typer(label_app, name="label", help="Email labeling operations")
@@ -1018,6 +1025,7 @@ async def _monitor_resources(duration: int, interval: int):
 
 async def _manage_gmail(action: str, query: Optional[str], limit: int):
     """Manage Gmail operations implementation."""
+    gmail_client = None
     try:
         gmail_client = await get_gmail_client()
         
@@ -1098,6 +1106,13 @@ async def _manage_gmail(action: str, query: Optional[str], limit: int):
     except Exception as e:
         console.print(f"[red]❌ Gmail command failed: {e}[/red]")
         raise typer.Exit(1)
+    finally:
+        # Ensure proper cleanup
+        try:
+            if gmail_client and hasattr(gmail_client, 'close'):
+                await gmail_client.close()
+        except Exception as cleanup_error:
+            console.print(f"[yellow]Warning: Cleanup error: {cleanup_error}[/yellow]")
 
 @app.command()
 def server(

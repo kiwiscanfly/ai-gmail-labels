@@ -22,7 +22,7 @@ class ReceiptClassificationResult:
     """Receipt email classification result."""
     is_receipt: bool
     confidence: float  # 0.0 to 1.0
-    receipt_type: str  # "purchase", "subscription", "service", "refund", "donation", "other"
+    receipt_type: str  # "purchase", "service", "other"
     reasoning: str
     amount: Optional[str] = None
     currency: Optional[str] = None
@@ -100,11 +100,9 @@ class ReceiptPatternAnalyzer:
         
         # Receipt type indicators
         self.type_indicators = {
-            'purchase': ['order', 'purchase', 'bought', 'shipped', 'delivery'],
-            'subscription': ['subscription', 'renewal', 'monthly', 'annual', 'recurring'],
-            'service': ['service', 'appointment', 'booking', 'reservation'],
-            'refund': ['refund', 'return', 'credit', 'reversal', 'reimbursement'],
-            'donation': ['donation', 'contribution', 'gift', 'charitable']
+            'purchase': ['order', 'purchase', 'bought', 'shipped', 'delivery', 'subscription', 'renewal', 'monthly', 'annual', 'recurring'],
+            'service': ['service', 'appointment', 'booking', 'reservation', 'hosting', 'utilities', 'parking', 'billing'],
+            'other': ['refund', 'return', 'credit', 'reversal', 'reimbursement', 'donation', 'contribution', 'gift', 'charitable']
         }
     
     def extract_features(self, email: EmailMessage) -> Dict[str, Any]:
@@ -340,12 +338,60 @@ class ReceiptClassifier:
         self.pattern_analyzer = ReceiptPatternAnalyzer()
         self.vendor_profiles: Dict[str, VendorProfile] = {}
         
+        # Rule-based classification patterns - bypass LLM for obvious cases
+        # Format: regex pattern -> (receipt_type, confidence, reasoning)
+        self.subject_patterns = {
+            # Software/App Store receipts → SERVICE
+            r"your receipt from apple": ("service", 0.99, "Apple App Store receipt"),
+            r"receipt.*apple": ("service", 0.95, "Apple service receipt"),
+            r"your receipt from anthropic": ("service", 0.99, "Anthropic AI service receipt"),
+            r"anthropic.*receipt": ("service", 0.95, "Anthropic service receipt"),
+            
+            # Software subscription receipts → SERVICE
+            r"your tower receipt": ("service", 0.99, "Tower Git client subscription"),
+            r"tower.*receipt": ("service", 0.95, "Tower software receipt"),
+            r"your ifttt.*receipt": ("service", 0.99, "IFTTT automation service"),
+            r"ifttt.*receipt": ("service", 0.95, "IFTTT service receipt"),
+            
+            # Payment processors (for software) → SERVICE
+            r"receipt for your payment to paddle": ("service", 0.99, "Paddle software payment"),
+            r"paddle.*receipt": ("service", 0.95, "Paddle payment processor"),
+            
+            # Cloud/hosting services → SERVICE
+            r"aws.*invoice": ("service", 0.99, "AWS cloud service invoice"),
+            r"aws.*billing": ("service", 0.99, "AWS billing statement"),
+            r".*billing statement.*": ("service", 0.95, "Service billing statement"),
+            r".*invoice available.*": ("service", 0.95, "Service invoice"),
+            
+            # Parking → SERVICE
+            r"parking receipt": ("service", 0.99, "Parking service payment"),
+            r"your parking.*receipt": ("service", 0.99, "Parking payment receipt"),
+            
+            # Physical purchases/food → PURCHASE
+            r".*order with uber.*": ("purchase", 0.99, "Uber food delivery"),
+            r"uber.*receipt": ("purchase", 0.95, "Uber transaction"),
+            r"doordash.*receipt": ("purchase", 0.95, "DoorDash food delivery"),
+            
+            # PayPal (context dependent) → PURCHASE
+            r"receipt for your payment to .*": ("purchase", 0.90, "PayPal payment receipt"),
+            r"paypal.*receipt": ("purchase", 0.90, "PayPal transaction"),
+            
+            # Service renewals → SERVICE
+            r"renewal confirmation": ("service", 0.95, "Service renewal"),
+            r"subscription.*receipt": ("service", 0.95, "Subscription payment"),
+            
+            # Generic patterns (lower confidence)
+            r"receipt for .*": ("purchase", 0.85, "Generic receipt"),
+            r"your.*receipt": ("purchase", 0.80, "Generic receipt format"),
+        }
+        
         # Classification prompt
         self.classification_prompt = """Analyze this email to determine if it's a receipt. Follow these steps:
 
 1. SUBJECT LINE ANALYSIS
    - Does the subject explicitly mention "receipt", "invoice", "payment confirmation"?
    - Does it say "receipt for your payment" or similar?
+   - App store purchases often have "Your receipt" in the subject
    - Look for clear receipt language in the subject
 
 2. TRANSACTION INDICATORS
@@ -353,22 +399,25 @@ class ReceiptClassifier:
    - Are there order/transaction numbers?
    - Does it show amounts, prices, or totals?
    - Is there a date of transaction?
+   - App subscriptions and software purchases count as transactions
 
 3. VENDOR INFORMATION
-   - Is the sender a business or service?
-   - Does it come from a payment/billing system?
-   - Are there business details (address, tax ID)?
+   - Is the sender a business or service (Apple, Google, Microsoft, SaaS companies)?
+   - Does it come from a payment/billing system (PayPal, Stripe, Paddle)?
+   - App stores (Apple, Google Play) send legitimate receipts
+   - Software companies (IFTTT, Tower) send subscription receipts
 
 4. RECEIPT TYPE ANALYSIS
    If it's a receipt, what type:
-   - PURCHASE: Product or goods purchase
-   - SUBSCRIPTION: Recurring payment/subscription
-   - SERVICE: Service payment (parking, appointment, etc.)
-   - REFUND: Money returned/credited
-   - DONATION: Charitable contribution
-   - OTHER: Other receipt type
+   - PURCHASE: Product or goods purchase (including subscriptions, recurring payments)
+   - SERVICE: Service payment (parking, appointments, utilities, hosting, etc.)
+   - OTHER: Any other receipt type
 
-IMPORTANT: If the subject line explicitly says "receipt" or "receipt for your payment", this is very strong evidence it's a receipt.
+IMPORTANT: 
+- If the subject line explicitly says "receipt" or "receipt for your payment", this is very strong evidence it's a receipt.
+- App Store purchases and subscription renewals (Apple, Google Play, Tower, IFTTT, etc.) are always receipts.
+- Any email confirming a payment, purchase, or subscription renewal should be classified as a receipt.
+- Don't be overly conservative - if there's payment confirmation, it's likely a receipt.
 
 Email to analyze:
 From: {sender}
@@ -384,7 +433,9 @@ CLASSIFICATION|CONFIDENCE|TYPE|AMOUNT|VENDOR|ORDER_NUM|REASONING
 
 Examples:
 RECEIPT|0.95|PURCHASE|$49.99|Amazon|123-4567890-1234567|Order confirmation with itemized list and payment details
-RECEIPT|0.95|SUBSCRIPTION|NA|Paddle.com|NA|Subject explicitly states "Receipt for Your Payment to Paddle.com"
+RECEIPT|0.95|SERVICE|NA|Paddle.com|NA|Subject explicitly states "Receipt for Your Payment to Paddle.com"
+RECEIPT|0.95|PURCHASE|$9.99|Apple|NA|App Store purchase receipt or subscription renewal
+RECEIPT|0.95|SERVICE|$15.00|IFTTT|NA|Service subscription receipt
 NOT_RECEIPT|0.90|NA|NA|NA|NA|Newsletter with no transaction information
 
 Your response:"""
@@ -394,6 +445,37 @@ Your response:"""
         self.ollama_manager = await get_ollama_manager()
         logger.info("Receipt classifier initialized with LLM support")
     
+    def _check_subject_patterns(self, email: EmailMessage) -> Optional[ReceiptClassificationResult]:
+        """Check if email subject matches any rule-based patterns."""
+        if not email.subject:
+            return None
+            
+        subject_lower = email.subject.lower().strip()
+        
+        for pattern, (receipt_type, confidence, reasoning) in self.subject_patterns.items():
+            if re.search(pattern, subject_lower):
+                logger.info(
+                    "Subject pattern match",
+                    email_id=email.id,
+                    pattern=pattern,
+                    receipt_type=receipt_type,
+                    confidence=confidence
+                )
+                
+                # Extract vendor from email sender
+                vendor = self._extract_vendor_name(email)
+                
+                return ReceiptClassificationResult(
+                    is_receipt=True,
+                    confidence=confidence,
+                    receipt_type=receipt_type,
+                    reasoning=f"Subject pattern match: {reasoning}",
+                    vendor=vendor,
+                    receipt_indicators=["subject_pattern_match", pattern]
+                )
+        
+        return None
+    
     async def classify_receipt(self, email: EmailMessage) -> ReceiptClassificationResult:
         """Classify email as receipt or not with detailed analysis."""
         try:
@@ -402,6 +484,13 @@ Your response:"""
             if cached_result:
                 logger.debug("Using cached receipt classification", email_id=email.id)
                 return cached_result
+            
+            # Check rule-based patterns first - bypass LLM for obvious cases
+            pattern_result = self._check_subject_patterns(email)
+            if pattern_result:
+                # Cache the pattern-based result
+                self.cache.cache_result(email, pattern_result)
+                return pattern_result
             
             # Extract receipt features
             features = self.pattern_analyzer.extract_features(email)

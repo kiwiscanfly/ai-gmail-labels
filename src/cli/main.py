@@ -5,7 +5,8 @@ from rich.console import Console
 from rich.panel import Panel
 
 # Import command groups
-from .commands.label import priority, marketing, receipt
+from .commands.label import priority, marketing, receipt, notifications, all, custom
+from .commands.system import install
 
 # Import legacy system commands from the main CLI
 import sys
@@ -25,9 +26,15 @@ manage_app = typer.Typer(help="Label and category management")
 system_app = typer.Typer(help="System operations and monitoring")
 
 # Mount label subcommands
+label_app.add_typer(all.app, name="all", help="Combined classification (priority + marketing + receipt + notifications)")
 label_app.add_typer(priority.app, name="priority", help="Priority classification")
 label_app.add_typer(marketing.app, name="marketing", help="Marketing classification")
 label_app.add_typer(receipt.app, name="receipt", help="Receipt classification")
+label_app.add_typer(notifications.app, name="notifications", help="Notification classification")
+label_app.add_typer(custom.app, name="custom", help="Custom category classification with AI-powered search terms")
+
+# Mount system subcommands
+system_app.add_typer(install.app, name="install", help="Install and configure the email-agents system")
 
 # Add command groups to main app
 app.add_typer(label_app, name="label", help="Email labeling operations")
@@ -56,9 +63,11 @@ def info():
 This is the unified command-line interface for email classification and labeling.
 
 [bold]Available Commands:[/bold]
+• [cyan]email-agent label all[/cyan] - Apply all classifiers (priority + marketing + receipt + notifications)
 • [cyan]email-agent label priority[/cyan] - Classify emails by priority (Critical/High/Medium/Low)
 • [cyan]email-agent label marketing[/cyan] - Detect marketing emails (Promotional/Newsletter/etc)
-• [cyan]email-agent label receipt[/cyan] - Identify receipts (Purchase/Subscription/etc)
+• [cyan]email-agent label receipt[/cyan] - Identify receipts (Purchase/Service/Other)
+• [cyan]email-agent label notifications[/cyan] - Classify notifications (System/Update/Alert/Reminder/Security)
 
 [bold]Target Options:[/bold]
 • [yellow]unread[/yellow] - Process unread emails
@@ -71,9 +80,11 @@ This is the unified command-line interface for email classification and labeling
 • [yellow]--detailed[/yellow] - Show detailed analysis results
 
 [bold]Examples:[/bold]
-[dim]email-agent label priority unread
+[dim]email-agent label all unread --limit 20
+email-agent label priority unread
 email-agent label marketing recent 7 --dry-run
-email-agent label receipt query "from:amazon.com" --limit 10[/dim]
+email-agent label receipt query "from:amazon.com" --limit 10
+email-agent label notifications unread --detailed[/dim]
 
 [bold yellow]Note:[/bold yellow] Commands apply labels by default. Use --dry-run to preview first.
         """,

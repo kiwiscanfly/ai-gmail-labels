@@ -1,4 +1,5 @@
 """System command implementations."""
 
-# Placeholder for future system commands  
-__all__ = []
+from . import install
+
+__all__ = ["install"]

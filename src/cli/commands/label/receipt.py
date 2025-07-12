@@ -19,13 +19,10 @@ class ReceiptLabelCommand(BaseEmailProcessor):
         super().__init__()
         self.receipt_classifier = None
         
-        # Receipt label mapping - only for actual receipts
+        # Receipt label mapping - simplified to three types
         self.receipt_labels = {
             "purchase": "Receipts/Purchase",
-            "subscription": "Receipts/Subscription",
-            "service": "Receipts/Service",
-            "refund": "Receipts/Refund",
-            "donation": "Receipts/Donation",
+            "service": "Receipts/Service", 
             "other": "Receipts/Other"
         }
     
@@ -97,8 +94,8 @@ class ReceiptLabelCommand(BaseEmailProcessor):
         
         results = []
         receipt_counts = {
-            "purchase": 0, "subscription": 0, "service": 0, 
-            "refund": 0, "donation": 0, "other": 0, "non_receipt": 0, "error": 0
+            "purchase": 0, "service": 0, "other": 0, 
+            "non_receipt": 0, "error": 0
         }
         
         # Process emails with progress bar
@@ -156,7 +153,7 @@ class ReceiptLabelCommand(BaseEmailProcessor):
                                 reasoning=receipt_result.reasoning
                             )
                             await self.email_service.apply_category(email.id, category, create_labels=True)
-                            result["label_applied"] = label_name
+                            result["labels_applied"] = [label_name]
                             self.console.print(f"   🧾 Applied {label_name} to: {email.subject[:40]}...")
                             
                             # Print receipt details if available and extract_details is True
@@ -168,7 +165,7 @@ class ReceiptLabelCommand(BaseEmailProcessor):
                                 if receipt_result.order_number:
                                     self.console.print(f"      Order #: {receipt_result.order_number}")
                         else:
-                            result["label_would_apply"] = label_name
+                            result["labels_would_apply"] = [label_name]
                             self.console.print(f"   🔍 Would apply {label_name} (confidence: {receipt_result.confidence:.1%})")
                             
                             # Print receipt details in dry run if requested
@@ -414,6 +411,46 @@ def query(
         
         results = await command.execute(
             target=f"query:{search_query}",
+            confidence_threshold=confidence_threshold,
+            dry_run=dry_run,
+            limit=limit,
+            types=types_list,
+            extract_details=extract_details,
+            vendor_stats=vendor_stats,
+            detailed=detailed
+        )
+        
+        command.format_output(results)
+        return command
+    
+    run()
+
+
+@app.command()
+def search(
+    query: str = typer.Option(..., "--query", "-q", help="Gmail search query"),
+    confidence_threshold: float = typer.Option(0.7, "--confidence-threshold", "-c", help="Minimum confidence for labeling"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview labels without applying them (default: apply labels)"),
+    limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
+    types: Optional[str] = typer.Option(None, "--types", help="Comma-separated receipt types to include"),
+    extract_details: bool = typer.Option(False, "--extract-details", help="Extract and display transaction details"),
+    vendor_stats: bool = typer.Option(False, "--vendor-stats", help="Include vendor statistics"),
+    detailed: bool = typer.Option(False, "--detailed", help="Show detailed analysis results")
+):
+    """Label emails using --query option with receipt classification."""
+    
+    @run_async_command
+    async def run():
+        command = ReceiptLabelCommand()
+        await command.initialize()
+        
+        # Parse types if provided
+        types_list = None
+        if types:
+            types_list = [t.strip() for t in types.split(',')]
+        
+        results = await command.execute(
+            target=f"query:{query}",
             confidence_threshold=confidence_threshold,
             dry_run=dry_run,
             limit=limit,
