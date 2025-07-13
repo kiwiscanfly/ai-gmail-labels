@@ -3,11 +3,15 @@
 import asyncio
 from typing import Optional, Dict, Any, List
 import typer
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 import time
 from concurrent.futures import ProcessPoolExecutor
 
 from src.cli.base import BaseEmailProcessor, run_async_command
+from src.cli.formatters import (
+    info, success, warning, error, step, llm_status, 
+    classification_result, progress, show_summary_panel, show_results_table,
+    verbose_info, user_friendly_status, status_with_spinner, set_verbose_mode
+)
 from src.services.email_prioritizer import EmailPrioritizer
 from src.services.marketing_classifier import MarketingEmailClassifier
 from src.services.receipt_classifier import ReceiptClassifier
@@ -18,7 +22,58 @@ from src.models.unified_analysis import UnifiedEmailAnalysis
 from src.cli.langchain.chains import EmailRouterChain
 from src.integrations.ollama_client import get_ollama_manager
 
-app = typer.Typer(help="Combined email classification commands")
+app = typer.Typer(help="Combined email classification commands", invoke_without_command=True)
+
+
+@app.callback()
+def main_callback(
+    ctx: typer.Context,
+    days: int = typer.Option(7, "--days", help="Number of days to look back"),
+    priority_confidence: float = typer.Option(0.7, "--priority-confidence", help="Minimum confidence for priority labeling"),
+    marketing_confidence: float = typer.Option(0.7, "--marketing-confidence", help="Minimum confidence for marketing labeling"),
+    receipt_confidence: float = typer.Option(0.7, "--receipt-confidence", help="Minimum confidence for receipt labeling"),
+    notifications_confidence: float = typer.Option(0.7, "--notifications-confidence", help="Minimum confidence for notifications labeling"),
+    custom_confidence: float = typer.Option(0.7, "--custom-confidence", help="Minimum confidence for custom category labeling"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview labels without applying them (default: apply labels)"),
+    limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
+    exclude_personal: bool = typer.Option(True, "--exclude-personal/--include-personal", help="Exclude personal emails from marketing labeling"),
+    detailed: bool = typer.Option(False, "--detailed", help="Show detailed analysis results"),
+    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed technical information")
+):
+    """Label recent emails with all classifiers (priority + marketing + receipt + notifications).
+    
+    This is the default behavior when no subcommand is specified.
+    Equivalent to running 'email-agent label all recent'.
+    """
+    # If no subcommand is invoked, run the recent command as default
+    if ctx.invoked_subcommand is None:
+        # Set verbose mode based on flag
+        set_verbose_mode(verbose)
+        
+        @run_async_command
+        async def run():
+            command = AllLabelCommand()
+            await command.initialize()
+            
+            results = await command.execute(
+                target=f"recent:{days}days",
+                priority_confidence=priority_confidence,
+                marketing_confidence=marketing_confidence,
+                receipt_confidence=receipt_confidence,
+                notifications_confidence=notifications_confidence,
+                custom_confidence=custom_confidence,
+                dry_run=dry_run,
+                limit=limit,
+                exclude_personal=exclude_personal,
+                detailed=detailed,
+                intelligent_routing=intelligent_routing
+            )
+            
+            command.format_output(results)
+            return command
+        
+        run()
 
 
 class AllLabelCommand(BaseEmailProcessor):
@@ -74,42 +129,39 @@ class AllLabelCommand(BaseEmailProcessor):
         """Optimized email processing with concurrent fetching."""
         emails = []
         
-        self.console.print(f"[blue]Searching for emails with query: '{query}'[/blue]")
-        
-        # Collect email references first
-        email_refs = []
-        async for email_ref in self.email_service.search_emails(query, limit):
-            email_refs.append(email_ref)
+        with status_with_spinner(f"Searching for emails matching: {query}"):
+            # Collect email references first
+            email_refs = []
+            async for email_ref in self.email_service.search_emails(query, limit):
+                email_refs.append(email_ref)
         
         if not email_refs:
-            self.console.print(f"[yellow]No emails found for query: '{query}'[/yellow]")
+            warning(f"No emails found for query: '{query}'")
             return emails
         
-        self.console.print(f"[blue]Fetching content for {len(email_refs)} emails concurrently...[/blue]")
-        
-        # Fetch email content concurrently in batches
-        batch_size = 10  # Fetch 10 emails concurrently
-        ref_batches = [email_refs[i:i + batch_size] for i in range(0, len(email_refs), batch_size)]
-        
-        for ref_batch in ref_batches:
-            # Create concurrent tasks for email content fetching
-            fetch_tasks = [
-                self.email_service.get_email_content(ref.email_id)
-                for ref in ref_batch
-            ]
+        with status_with_spinner(f"Loading {len(email_refs)} emails", f"Ready to analyze {len(email_refs)} emails"):
+            # Fetch email content concurrently in batches
+            batch_size = 10  # Fetch 10 emails concurrently
+            ref_batches = [email_refs[i:i + batch_size] for i in range(0, len(email_refs), batch_size)]
             
-            # Execute batch of content fetches concurrently
-            batch_emails = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-            
-            # Process results and filter out failures
-            for email in batch_emails:
-                if email and not isinstance(email, Exception):
-                    emails.append(email)
-            
-            # Small delay between batches to avoid overwhelming the API
-            await asyncio.sleep(0.05)
+            for ref_batch in ref_batches:
+                # Create concurrent tasks for email content fetching
+                fetch_tasks = [
+                    self.email_service.get_email_content(ref.email_id)
+                    for ref in ref_batch
+                ]
+                
+                # Execute batch of content fetches concurrently
+                batch_emails = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                
+                # Process results and filter out failures
+                for email in batch_emails:
+                    if email and not isinstance(email, Exception):
+                        emails.append(email)
+                
+                # Small delay between batches to avoid overwhelming the API
+                await asyncio.sleep(0.05)
         
-        self.console.print(f"[green]Successfully fetched {len(emails)} emails for processing[/green]")
         return emails
     
     async def initialize(self):
@@ -141,37 +193,38 @@ class AllLabelCommand(BaseEmailProcessor):
     
     async def _ensure_all_labels_exist(self) -> None:
         """Ensure all classification labels exist in Gmail with proper nesting."""
-        self.console.print("[blue]Checking all classification labels...[/blue]")
+        verbose_info("Checking all classification labels")
         
-        try:
-            # Get existing labels
-            existing_labels = await self.email_service.get_labels()
-            existing_label_names = {label.name for label in existing_labels}
-            
-            # Parent labels to create
-            parent_labels = ["Priority", "Marketing", "Receipts", "Notifications"]
-            
-            # Create parent labels if needed
-            for parent_label in parent_labels:
-                if parent_label not in existing_label_names:
-                    self.console.print(f"   Creating parent label: {parent_label}")
-                    await self.email_service.create_label(name=parent_label)
-                    existing_label_names.add(parent_label)
-                else:
-                    self.console.print(f"   ✓ Parent label exists: {parent_label}")
-            
-            # Create all sublabels
-            all_labels = {**self.priority_labels, **self.marketing_labels, **self.receipt_labels, **self.notification_labels}
-            for subtype, label_name in all_labels.items():
-                if label_name not in existing_label_names:
-                    self.console.print(f"   Creating nested label: {label_name}")
-                    await self.email_service.create_label(name=label_name)
-                else:
-                    self.console.print(f"   ✓ Nested label exists: {label_name}")
-                    
-        except Exception as e:
-            self.console.print(f"[red]Failed to ensure labels exist: {e}[/red]")
-            raise
+        with status_with_spinner("Setting up email classification", "Email classification setup complete"):
+            try:
+                # Get existing labels
+                existing_labels = await self.email_service.get_labels()
+                existing_label_names = {label.name for label in existing_labels}
+                
+                # Parent labels to create
+                parent_labels = ["Priority", "Marketing", "Receipts", "Notifications"]
+                
+                # Create parent labels if needed
+                for parent_label in parent_labels:
+                    if parent_label not in existing_label_names:
+                        verbose_info(f"   Creating parent label: {parent_label}")
+                        await self.email_service.create_label(name=parent_label)
+                        existing_label_names.add(parent_label)
+                    else:
+                        verbose_info(f"   ✓ Parent label exists: {parent_label}")
+                
+                # Create all sublabels
+                all_labels = {**self.priority_labels, **self.marketing_labels, **self.receipt_labels, **self.notification_labels}
+                for subtype, label_name in all_labels.items():
+                    if label_name not in existing_label_names:
+                        verbose_info(f"   Creating nested label: {label_name}")
+                        await self.email_service.create_label(name=label_name)
+                    else:
+                        verbose_info(f"   ✓ Nested label exists: {label_name}")
+                        
+            except Exception as e:
+                error(f"Failed to ensure labels exist: {e}")
+                raise
     
     async def classify_email_parallel(self, email, use_intelligent_routing: bool = True) -> Dict[str, Any]:
         """Classify a single email using parallel classifiers with unified analysis.
@@ -202,6 +255,10 @@ class AllLabelCommand(BaseEmailProcessor):
                 if unified_analysis.appears_notification and "notifications" not in recommended_services:
                     recommended_services.append("notifications")
                 
+                # ALWAYS include priority classification for ALL emails
+                if "priority" not in recommended_services:
+                    recommended_services.insert(0, "priority")  # Add at beginning
+                
                 routing_info = {
                     "recommended_services": recommended_services,
                     "routing_method": "intelligent_enhanced",
@@ -212,7 +269,7 @@ class AllLabelCommand(BaseEmailProcessor):
                     }
                 }
             else:
-                # Use all services (legacy behavior)
+                # Use all services (legacy behavior) - priority is already included
                 recommended_services = ["priority", "marketing", "receipt", "notifications"]
                 routing_info = {
                     "recommended_services": recommended_services,
@@ -376,20 +433,21 @@ class AllLabelCommand(BaseEmailProcessor):
             receipt_context = unified_analysis.get_classifier_context('receipt')
             
             # Skip receipt classification if unified analysis suggests it's clearly not a receipt
-            if not unified_analysis.appears_receipt and not unified_analysis.monetary_amounts:
-                return {
-                    "service_type": "receipt",
-                    "classification": {
-                        "is_receipt": False,
-                        "confidence": 0.90,
-                        "reasoning": "Unified analysis found no receipt indicators",
-                        "skip_reason": "unified_analysis_optimization"
-                    },
-                    "suggested_label": None
-                }
+            # DISABLED - Let the receipt classifier do the full analysis 
+            # if not unified_analysis.appears_receipt and not unified_analysis.monetary_amounts:
+            #     return {
+            #         "service_type": "receipt",
+            #         "classification": {
+            #             "is_receipt": False,
+            #             "confidence": 0.90,
+            #             "reasoning": "Unified analysis found no receipt indicators",
+            #             "skip_reason": "unified_analysis_optimization"
+            #         },
+            #         "suggested_label": None
+            #     }
             
             # Run the classification (existing method)
-            result = await self.receipt_classifier.classify_email(email)
+            result = await self.receipt_classifier.classify_receipt(email)
             
             # Determine label from receipt classification
             suggested_label = None
@@ -627,10 +685,14 @@ class AllLabelCommand(BaseEmailProcessor):
         if not emails:
             return {"processed": 0, "results": [], "dry_run": dry_run}
         
-        routing_mode = "intelligent routing" if intelligent_routing else "all classifiers"
-        self.console.print(f"[blue]Processing {len(emails)} emails with {routing_mode}...[/blue]")
+        # Show analysis status (no spinner needed as progress bar will take over)
         if dry_run:
-            self.console.print("[yellow]DRY RUN MODE - No labels will be applied[/yellow]")
+            user_friendly_status(f"Analyzing {len(emails)} emails (preview mode)")
+        else:
+            user_friendly_status(f"Analyzing and labeling {len(emails)} emails")
+        
+        if dry_run:
+            warning("Preview mode - No labels will be applied")
         
         results = []
         counts = {
@@ -642,14 +704,7 @@ class AllLabelCommand(BaseEmailProcessor):
         }
         
         # Process emails with progress bar
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self.console
-        ) as progress:
-            task = progress.add_task("Processing emails...", total=len(emails))
+        with progress("Processing emails...", total=len(emails)) as progress_tracker:
             
             # Process emails in batches for better performance
             batch_size = min(8, len(emails))  # Process up to 8 emails concurrently
@@ -681,7 +736,7 @@ class AllLabelCommand(BaseEmailProcessor):
                             if not result.get("processed"):
                                 results.append(result)
                                 counts["errors"] += 1
-                                progress.advance(task)
+                                progress_tracker.update()
                                 continue
                     
                             # Filter labels based on confidence thresholds
@@ -754,7 +809,7 @@ class AllLabelCommand(BaseEmailProcessor):
                                 "processed": False
                             })
                         
-                        progress.advance(task)
+                        progress_tracker.update()
                     
                     # Batch delay to avoid overwhelming APIs (shorter delay since we're batching)
                     await asyncio.sleep(0.05)
@@ -769,7 +824,7 @@ class AllLabelCommand(BaseEmailProcessor):
                             "error": f"Batch processing error: {str(e)}",
                             "processed": False
                         })
-                        progress.advance(task)
+                        progress_tracker.update()
         
         # Store results for batch processing reference
         self._current_results = results
@@ -785,13 +840,13 @@ class AllLabelCommand(BaseEmailProcessor):
                     subject = result.get("subject", "Unknown")[:40]
                     if labels:
                         result["labels_would_apply"] = labels
-                        self.console.print(f"   🔍 Would apply {len(labels)} labels to: {subject}... -> {', '.join(labels)}")
+                        classification_result(subject, labels, dry_run=True)
                     else:
                         result["labels_skipped"] = "No labels met confidence thresholds"
-                        self.console.print(f"   ⚠️  No labels would be applied to: {subject}... (low confidence)")
+                        classification_result(subject, [], dry_run=True)
         
         # Print summary
-        self.console.print(f"\n[green]🎉 Combined processing complete![/green]")
+        success("Email classification complete!")
         
         # Display performance metrics
         successful_results = [r for r in results if r.get("processed")]
@@ -1007,9 +1062,13 @@ def unread(
     limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
     exclude_personal: bool = typer.Option(True, "--exclude-personal/--include-personal", help="Exclude personal emails from marketing labeling"),
     detailed: bool = typer.Option(False, "--detailed", help="Show detailed analysis results"),
-    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)")
+    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed technical information")
 ):
     """Label unread emails with all classifiers (priority + marketing + receipt + notifications)."""
+    
+    # Set verbose mode based on flag
+    set_verbose_mode(verbose)
     
     @run_async_command
     async def run():
@@ -1048,9 +1107,13 @@ def recent(
     limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
     exclude_personal: bool = typer.Option(True, "--exclude-personal/--include-personal", help="Exclude personal emails from marketing labeling"),
     detailed: bool = typer.Option(False, "--detailed", help="Show detailed analysis results"),
-    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)")
+    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed technical information")
 ):
     """Label recent emails with all classifiers (priority + marketing + receipt + notifications)."""
+    
+    # Set verbose mode based on flag
+    set_verbose_mode(verbose)
     
     @run_async_command
     async def run():
@@ -1089,9 +1152,13 @@ def query(
     limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
     exclude_personal: bool = typer.Option(True, "--exclude-personal/--include-personal", help="Exclude personal emails from marketing labeling"),
     detailed: bool = typer.Option(False, "--detailed", help="Show detailed analysis results"),
-    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)")
+    intelligent_routing: bool = typer.Option(True, "--intelligent-routing/--all-classifiers", help="Use smart routing to determine which classifiers to run (default: intelligent)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed technical information")
 ):
     """Label emails matching custom query with all classifiers (priority + marketing + receipt + notifications)."""
+    
+    # Set verbose mode based on flag
+    set_verbose_mode(verbose)
     
     @run_async_command
     async def run():

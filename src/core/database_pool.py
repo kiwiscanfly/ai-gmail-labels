@@ -194,11 +194,14 @@ class DatabaseConnectionPool:
                     self._stats.total_requests
                 )
             
-            logger.debug(
-                "Connection acquired from pool",
-                wait_time_ms=wait_time_ms,
-                active_connections=self._stats.active_connections
-            )
+            # Reduced log level - these are too noisy for normal operation
+            # Only log if wait time is significant (> 100ms)
+            if wait_time_ms > 100:
+                logger.debug(
+                    "Slow connection acquisition",
+                    wait_time_ms=wait_time_ms,
+                    active_connections=self._stats.active_connections
+                )
             
             yield connection
             
@@ -213,10 +216,7 @@ class DatabaseConnectionPool:
                     await connection.rollback()  # Ensure clean state
                     await self._pool.put(connection)
                     
-                    logger.debug(
-                        "Connection returned to pool",
-                        active_connections=self._stats.active_connections
-                    )
+                    # Removed noisy connection return logging
                     
                 except Exception as e:
                     logger.error("Failed to return connection to pool", error=str(e))

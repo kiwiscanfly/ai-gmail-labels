@@ -1030,6 +1030,352 @@ email-agent label all --target unread --types priority,marketing --apply
 - [x] Error handling and recovery - **COMPLETED**: Comprehensive error handling
 - [x] Backward compatibility maintained - **COMPLETED**: Legacy commands still work
 
+## Evaluation and Testing Framework
+
+### 1. Classification Accuracy Evaluations
+
+#### Priority Classifier Evaluations
+```bash
+# Test priority classification accuracy
+email-agent manage stats classification --type priority --sample-size 200
+email-agent label priority --query "is:important" --confidence-threshold 0.8 --dry-run --detailed
+
+# Validate confidence score calibration
+email-agent manage stats confidence --type priority --export confidence_analysis.csv
+
+# Test edge cases and false positives
+email-agent label priority --query "from:marketing" --dry-run --analyze-misclassifications
+```
+
+**Expected Metrics:**
+- High priority accuracy: >85%
+- Medium priority accuracy: >80% 
+- Low priority accuracy: >90%
+- False positive rate: <10%
+- Confidence calibration: ±5% of actual accuracy
+
+#### Marketing Classifier Evaluations
+```bash
+# Test marketing vs personal email detection
+email-agent label marketing --unread --dry-run --export-results marketing_eval.json
+email-agent manage stats senders --marketing-rate --validate-accuracy
+
+# Subtype classification accuracy
+email-agent label marketing --types promotional,newsletter,transactional --detailed
+```
+
+**Expected Metrics:**
+- Marketing detection accuracy: >88%
+- Promotional subtype precision: >85%
+- Newsletter detection recall: >90%
+- Transactional vs promotional separation: >92%
+
+#### Receipt Classifier Evaluations  
+```bash
+# Test receipt detection and vendor extraction
+email-agent label receipt --query "receipt OR invoice OR order" --dry-run --vendor-stats
+email-agent manage stats receipts --accuracy --amount-extraction --vendor-mapping
+
+# Uber/ride-share receipt routing validation
+email-agent label receipt --query "from:uber" --detailed --validate-routing
+```
+
+**Expected Metrics:**
+- Receipt detection accuracy: >90%
+- Vendor extraction accuracy: >80%
+- Amount extraction accuracy: >85%
+- Receipt routing (via EmailRouterChain): >95%
+
+#### Notifications Classifier Evaluations
+```bash
+# Test notification vs personal email separation
+email-agent label notifications --unread --detailed --dry-run
+email-agent manage stats notifications --false-positive-analysis
+```
+
+**Expected Metrics:**
+- Notification detection accuracy: >87%
+- System alert identification: >95%
+- Social media notification filtering: >85%
+
+#### Custom Classifier Evaluations
+```bash
+# Test AI-generated search term effectiveness
+email-agent label custom "programming" --generate-terms --search-existing --dry-run
+email-agent manage categories analyze "programming" --term-effectiveness
+
+# Validate category training from existing labels
+email-agent manage categories train "work" --from-label "Projects/*" --validate-accuracy
+```
+
+**Expected Metrics:**
+- Search term relevance: >80%
+- Category classification accuracy: >75%
+- Training convergence: <50 examples needed
+
+### 2. System Performance Benchmarks
+
+#### Processing Speed Tests
+```bash
+# Email throughput testing
+email-agent label all --recent 7days --limit 1000 --benchmark --parallel 5
+email-agent system monitor --processing-speed --export speed_metrics.csv
+
+# Batch processing optimization validation
+email-agent label all --batch-size 50 --compare-performance
+```
+
+**Expected Performance:**
+- Single email processing: <2 seconds
+- Batch processing (50 emails): <30 seconds  
+- Large dataset (1000 emails): <10 minutes
+- Memory usage: <500MB peak
+
+#### LLM Response Time Tracking
+```bash
+# Ollama classification latency measurement
+email-agent system monitor --ollama-metrics --track-response-times
+email-agent manage stats performance --llm-breakdown --export ollama_timing.json
+
+# Model performance comparison
+email-agent system config --model llama3.2:1b --benchmark vs --model llama3.2:3b
+```
+
+**Expected Latency:**
+- LLM classification: <3 seconds per email
+- Batch LLM processing: <1 second per email average
+- Cache hit rate: >60%
+- Model startup time: <10 seconds
+
+#### Caching Effectiveness
+```bash
+# Cache hit rate validation
+email-agent manage stats cache --hit-rates --efficiency-analysis
+email-agent system monitor --cache-metrics --memory-usage
+
+# Cache invalidation testing
+email-agent system cache --clear --validate-rebuilding
+```
+
+**Expected Cache Performance:**
+- Classification cache hit rate: >60%
+- Cache memory efficiency: <100MB
+- Cache lookup time: <10ms
+- Cache invalidation accuracy: 100%
+
+### 3. Integration and Routing Evaluations
+
+#### EmailRouterChain Testing
+```bash
+# Validate intelligent routing decisions  
+email-agent label all --intelligent-routing --dry-run --export-routing-decisions
+email-agent manage stats routing --accuracy --optimization-recommendations
+
+# Test routing vs all-classifiers performance
+email-agent label all --intelligent-routing --benchmark vs --all-classifiers
+```
+
+**Expected Routing Accuracy:**
+- Correct service selection: >90%
+- Unnecessary processing reduction: >40%
+- Routing decision time: <0.5 seconds
+- Multi-service coordination: 100% success
+
+#### Unified Analysis Accuracy
+```bash
+# Test early-return optimizations don't skip valid emails
+email-agent label all --validate-unified-analysis --no-early-returns --compare
+email-agent manage stats unified --missed-classifications --false-negatives
+
+# Uber receipt routing validation (specific test case)
+email-agent label all --query "from:uber" --validate-receipt-routing --detailed
+```
+
+**Expected Unified Analysis:**
+- Early return false negative rate: <2%
+- Processing efficiency gain: >30%
+- Classification consistency: >98%
+- Multi-classifier agreement: >85%
+
+#### Multi-classifier Coordination
+```bash
+# Ensure proper label application without conflicts
+email-agent label all --unread --validate-label-conflicts --dry-run
+email-agent manage labels analyze --conflict-detection --resolution-strategy
+
+# Test label hierarchy and organization
+email-agent manage labels list --hierarchy-validation --unused-detection
+```
+
+**Expected Coordination:**
+- Label conflict rate: <1%
+- Proper label hierarchy: 100%
+- Label application consistency: >98%
+- Duplicate label prevention: 100%
+
+### 4. Quality Assurance Metrics
+
+#### False Positive/Negative Rate Tracking
+```bash
+# Track classification errors by type
+email-agent manage stats errors --by-classifier --false-positive-analysis
+email-agent label all --sample-validation --human-review-sample
+
+# Generate classification confusion matrices
+email-agent manage stats classification --confusion-matrix --export-detailed
+```
+
+**Expected Error Rates:**
+- Overall false positive rate: <8%
+- Overall false negative rate: <12%
+- Critical misclassification rate: <3%
+- Error trend improvement: >5% monthly
+
+#### Confidence Score Calibration
+```bash
+# Verify confidence levels match actual accuracy
+email-agent manage stats confidence --calibration-analysis --all-classifiers
+email-agent label all --confidence-validation --sample-size 500
+
+# Test confidence threshold optimization
+email-agent system optimize --confidence-thresholds --validation-split 80/20
+```
+
+**Expected Calibration:**
+- Confidence accuracy correlation: >0.85
+- Over-confidence rate: <15%
+- Under-confidence rate: <10%
+- Optimal threshold convergence: Auto-tuned
+
+#### Edge Case Handling
+```bash
+# Test unusual email formats, languages, encodings
+email-agent label all --edge-case-testing --international-emails
+email-agent system validate --encoding-support --character-sets
+
+# HTML/text ratio edge cases
+email-agent label marketing --html-parsing-stress-test --malformed-emails
+```
+
+**Expected Edge Case Performance:**
+- International email support: >80% accuracy
+- Malformed email handling: 100% graceful failure
+- Encoding error recovery: >95%
+- HTML parsing robustness: >90%
+
+#### Sender Reputation Accuracy
+```bash
+# Validate reputation scoring effectiveness
+email-agent manage stats senders --reputation-validation --accuracy-metrics
+email-agent label priority --sender-reputation-impact --analyze-adjustments
+
+# Test reputation learning and adaptation
+email-agent manage senders --reputation-training --feedback-loop-validation
+```
+
+**Expected Reputation System:**
+- Reputation score accuracy: >80%
+- False urgency detection: >85%
+- Reputation adaptation rate: <20 emails
+- Score stability: ±0.1 over 100 emails
+
+### 5. User Experience Evaluations
+
+#### CLI Response Times
+```bash
+# Command startup and execution speed
+email-agent system benchmark --startup-time --all-commands
+email-agent manage stats performance --cli-responsiveness
+
+# Interactive command performance
+email-agent system install --benchmark-interactive --timing-analysis
+```
+
+**Expected CLI Performance:**
+- Command startup: <2 seconds
+- Help system response: <0.5 seconds
+- Interactive prompts: <1 second
+- Tab completion: <0.2 seconds
+
+#### Progress Indicator Accuracy
+```bash
+# Progress bar and spinner timing validation
+email-agent label all --recent 30days --validate-progress --timing-analysis
+email-agent system monitor --progress-accuracy --user-feedback
+
+# Loading animation effectiveness testing
+email-agent label all --spinner-evaluation --user-experience-metrics
+```
+
+**Expected Progress System:**
+- Progress bar accuracy: ±5%
+- Spinner responsiveness: <100ms updates
+- Time estimation accuracy: ±20%
+- Loading feedback clarity: >90% user satisfaction
+
+#### Output Format Quality
+```bash
+# Table formatting and result presentation testing
+email-agent manage stats --output-validation --format-testing
+email-agent label all --dry-run --output-quality-metrics
+
+# Rich console formatting validation
+email-agent system validate --console-output --color-accessibility
+```
+
+**Expected Output Quality:**
+- Table formatting consistency: 100%
+- Color accessibility compliance: WCAG 2.1 AA
+- Output readability score: >8/10
+- Information density optimization: User-tested
+
+#### Error Recovery Testing
+```bash
+# Graceful handling of API failures and edge cases
+email-agent system test --api-failure-simulation --recovery-validation
+email-agent label all --error-injection --resilience-testing
+
+# Network and authentication error handling
+email-agent system validate --offline-behavior --auth-error-recovery
+```
+
+**Expected Error Recovery:**
+- Graceful degradation: 100% cases
+- Error message clarity: >90% user comprehension
+- Recovery success rate: >85%
+- Data loss prevention: 100%
+
+### 6. Automated Evaluation Commands
+
+#### Daily Evaluation Suite
+```bash
+# Comprehensive daily validation (add to cron/CI)
+email-agent system evaluate --daily-suite --export-metrics daily_eval_$(date +%Y%m%d).json
+
+# Performance regression testing
+email-agent system benchmark --compare-baseline --performance-regression-detection
+```
+
+#### Weekly Deep Analysis
+```bash
+# Weekly comprehensive analysis
+email-agent system evaluate --weekly-deep-dive --classification-accuracy --sender-analysis
+
+# Model performance trends
+email-agent manage stats trends --weekly --export-dashboard weekly_dashboard.html
+```
+
+#### Monthly Quality Review
+```bash
+# Monthly quality assurance review
+email-agent system evaluate --monthly-qa --comprehensive-metrics --user-feedback
+
+# System optimization recommendations
+email-agent system optimize --monthly-review --generate-improvement-plan
+```
+
+This evaluation framework ensures the email classification system maintains high accuracy, performance, and user experience standards while providing comprehensive metrics for continuous improvement.
+
 ## COMPLETED WORK (2025-07-12)
 
 ### ✅ System Installation Command

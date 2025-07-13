@@ -246,19 +246,13 @@ class EmailRouterChain:
         }
         self.receipt_senders = {
             'amazon', 'paypal', 'stripe', 'apple', 'google', 'microsoft',
-            'billing', 'payments', 'orders', 'receipts'
+            'billing', 'payments', 'orders', 'receipts', 'uber'
         }
         
-        # Priority indicators
-        self.priority_keywords = {
-            'urgent', 'asap', 'immediate', 'critical', 'important', 'deadline',
-            'emergency', 'action required', 'time sensitive', 'priority',
-            'meeting', 'schedule', 'cancel', 'reschedule', 'approval needed'
-        }
-        self.priority_senders = {
-            'boss', 'manager', 'ceo', 'admin', 'support', 'security',
-            'alerts', 'urgent', 'critical'
-        }
+        # Priority indicators - removed per requirement
+        # All emails should get priority classification, not just specific ones
+        self.priority_keywords = set()  # Empty - all emails need priority
+        self.priority_senders = set()   # Empty - all emails need priority
         
         # Notification indicators
         self.notification_keywords = {
@@ -345,15 +339,10 @@ class EmailRouterChain:
             any(sender in sender_lower for sender in self.notification_senders)):
             services.append("notifications")
             
-        # Check for priority indicators
-        if (any(keyword in combined_text for keyword in self.priority_keywords) or
-            any(sender in sender_lower for sender in self.priority_senders)):
+        # ALL emails get priority classification (per requirement)
+        # Priority indicators removed - every email needs priority assessment
+        if "priority" not in services:
             services.append("priority")
-        
-        # Always include priority unless it's clearly just a receipt or marketing
-        if not services or (len(services) == 1 and services[0] in ["receipt", "marketing"]):
-            if "priority" not in services:
-                services.append("priority")
         
         return services
     
