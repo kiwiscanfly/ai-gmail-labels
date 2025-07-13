@@ -3,11 +3,15 @@
 import asyncio
 from typing import Optional, Dict, Any, List
 import typer
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 from rich.panel import Panel
 
 from src.cli.base import BaseEmailProcessor, run_async_command
+from src.cli.formatters import (
+    info, success, warning, error, step, llm_status, 
+    classification_result, progress, show_summary_panel, show_results_table,
+    verbose_info, user_friendly_status, status_with_spinner, set_verbose_mode
+)
 from src.services.custom_classifier import CustomClassifier
 from src.cli.langchain.agents import EmailAnalysisAgent
 from src.models.email import EmailCategory
@@ -158,7 +162,7 @@ class CustomLabelCommand(BaseEmailProcessor):
         self.ollama_manager = await get_ollama_manager()
         self.analysis_agent = EmailAnalysisAgent(self.ollama_manager)
         
-        self.console.print("[blue]Custom labeling services initialized[/blue]")
+        verbose_info("Custom labeling services initialized")
     
     async def execute(self, **kwargs) -> Dict[str, Any]:
         """Execute custom classification - wrapper for execute_classification."""
@@ -195,21 +199,23 @@ class CustomLabelCommand(BaseEmailProcessor):
         """
         # Generate or use provided search terms
         if generate_terms and not search_terms:
-            self.console.print(f"[blue]Generating AI-powered search terms for '{category}'...[/blue]")
-            search_terms = await self.custom_classifier.label_chain.generate_search_terms(category)
-            self.console.print(f"[green]Generated terms: {', '.join(search_terms)}[/green]")
+            with status_with_spinner(f"Generating AI search terms for '{category}'", f"Generated search terms for '{category}'"):
+                search_terms = await self.custom_classifier.label_chain.generate_search_terms(category)
+            success(f"Generated terms: {', '.join(search_terms)}")
         elif search_terms:
-            self.console.print(f"[blue]Using provided search terms: {', '.join(search_terms)}[/blue]")
+            verbose_info(f"Using provided search terms: {', '.join(search_terms)}")
         else:
             search_terms = [category.lower()]
-            self.console.print(f"[yellow]Using default search term: {category.lower()}[/yellow]")
+            warning(f"Using default search term: {category.lower()}")
         
-        # Determine search strategy
+        # Determine search strategy and process emails
         if search_existing:
             # Search entire mailbox using generated terms
             query_parts = [f'"{term}"' for term in search_terms]
             query = " OR ".join(query_parts)
-            self.console.print(f"[blue]Searching entire mailbox with terms: {query}[/blue]")
+            search_desc = f"entire mailbox with terms: {', '.join(search_terms[:3])}"
+            if len(search_terms) > 3:
+                search_desc += f" (+{len(search_terms) - 3} more)"
         else:
             # Combine target specification with search terms
             base_query = self._parse_target(target)
@@ -223,17 +229,24 @@ class CustomLabelCommand(BaseEmailProcessor):
             else:
                 query = terms_query
             
-            self.console.print(f"[blue]Searching {target} emails that match: {', '.join(search_terms[:5])}[/blue]")
+            search_desc = f"{target} emails matching: {', '.join(search_terms[:3])}"
+            if len(search_terms) > 3:
+                search_desc += f" (+{len(search_terms) - 3} more)"
         
-        # Process emails
-        emails = await self.process_emails(query, limit, dry_run)
+        # Process emails with spinner
+        with status_with_spinner(f"Searching {search_desc}"):
+            emails = await self.process_emails(query, limit, dry_run)
         
         if not emails:
+            warning(f"No emails found for category '{category}' with the specified search terms")
             return {"processed": 0, "results": [], "category": category, "search_terms": search_terms, "dry_run": dry_run}
         
-        self.console.print(f"[blue]Processing {len(emails)} emails for custom category '{category}'...[/blue]")
+        # Show analysis status (no spinner needed as progress bar will take over)
         if dry_run:
-            self.console.print("[yellow]DRY RUN MODE - No labels will be applied[/yellow]")
+            user_friendly_status(f"Analyzing {len(emails)} emails for '{category}' (preview mode)")
+            warning("Preview mode - No labels will be applied")
+        else:
+            user_friendly_status(f"Analyzing and labeling {len(emails)} emails for '{category}'")
         
         results = []
         match_count = 0
@@ -242,19 +255,12 @@ class CustomLabelCommand(BaseEmailProcessor):
         label_name = parent_label or category
         
         # Process emails with progress bar
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self.console
-        ) as progress:
-            task = progress.add_task(f"Classifying for '{category}'...", total=len(emails))
+        with progress(f"Classifying for '{category}'...", total=len(emails)) as progress_tracker:
             
             for i, email in enumerate(emails, 1):
                 try:
                     # Classify email for the custom category
-                    classification_result = await self.custom_classifier.classify_email(
+                    classify_result = await self.custom_classifier.classify_email(
                         email, category, search_terms, confidence_threshold
                     )
                     
@@ -263,38 +269,36 @@ class CustomLabelCommand(BaseEmailProcessor):
                         "subject": email.subject,
                         "sender": email.sender,
                         "category": category,
-                        "is_match": classification_result.is_match,
-                        "confidence": classification_result.confidence,
-                        "reasoning": classification_result.reasoning,
-                        "suggested_label": classification_result.suggested_label,
-                        "search_terms_used": classification_result.search_terms_used
+                        "is_match": classify_result.is_match,
+                        "confidence": classify_result.confidence,
+                        "reasoning": classify_result.reasoning,
+                        "suggested_label": classify_result.suggested_label,
+                        "search_terms_used": classify_result.search_terms_used
                     }
                     
-                    if classification_result.is_match and classification_result.confidence >= confidence_threshold:
+                    if classify_result.is_match and classify_result.confidence >= confidence_threshold:
                         if not dry_run:
                             # Apply the label to the email
                             category_obj = EmailCategory(
                                 email_id=email.id,
                                 suggested_labels=[label_name],
-                                confidence_scores={label_name: classification_result.confidence},
-                                reasoning=classification_result.reasoning
+                                confidence_scores={label_name: classify_result.confidence},
+                                reasoning=classify_result.reasoning
                             )
                             await self.email_service.apply_category(email.id, category_obj, create_labels=True)
                             result["label_applied"] = label_name
-                            self.console.print(f"   🏷️  Applied '{label_name}' to: {email.subject[:40]}...")
+                            verbose_info(f"Applied '{label_name}' to: {email.subject[:40]}...")
                         else:
                             result["label_would_apply"] = label_name
-                            self.console.print(f"   🔍 Would apply '{label_name}' (confidence: {classification_result.confidence:.1%})")
+                            verbose_info(f"Would apply '{label_name}' (confidence: {classify_result.confidence:.1%})")
                         
                         match_count += 1
-                    elif classification_result.is_match:
-                        result["label_skipped"] = f"Confidence {classification_result.confidence:.1%} below threshold {confidence_threshold:.1%}"
-                        if not dry_run:
-                            self.console.print(f"   ⚠️  Skipped {email.subject[:40]}... (low confidence)")
+                    elif classify_result.is_match:
+                        result["label_skipped"] = f"Confidence {classify_result.confidence:.1%} below threshold {confidence_threshold:.1%}"
+                        verbose_info(f"Skipped {email.subject[:40]}... (low confidence)")
                     else:
                         result["label_skipped"] = "Email does not match category"
-                        if not dry_run:
-                            self.console.print(f"   ℹ️  No match: {email.subject[:40]}...")
+                        verbose_info(f"No match: {email.subject[:40]}...")
                     
                     results.append(result)
                     
@@ -302,7 +306,7 @@ class CustomLabelCommand(BaseEmailProcessor):
                     await asyncio.sleep(0.1)
                     
                 except Exception as e:
-                    self.console.print(f"   ❌ Failed to process {email.subject[:40]}...: {str(e)}")
+                    error(f"Failed to process {email.subject[:40]}...: {str(e)}")
                     results.append({
                         "email_id": email.id,
                         "subject": email.subject,
@@ -313,13 +317,13 @@ class CustomLabelCommand(BaseEmailProcessor):
                         "error": str(e)
                     })
                 
-                progress.advance(task)
+                progress_tracker.update()
         
         # Print summary
-        self.console.print(f"\n[green]🎉 Custom classification complete![/green]")
-        self.console.print(f"   📊 Category: {category}")
-        self.console.print(f"   🎯 Matches found: {match_count}/{len(results)}")
-        self.console.print(f"   🔍 Search terms used: {', '.join(search_terms)}")
+        success("Custom classification complete!")
+        info(f"Category: {category}")
+        info(f"Matches found: {match_count}/{len(results)}")
+        verbose_info(f"Search terms used: {', '.join(search_terms)}")
         
         return {
             "processed": len(results),
@@ -428,12 +432,16 @@ def create(
     confidence_threshold: float = typer.Option(0.6, "--confidence-threshold", "-c", help="Minimum confidence for labeling"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview labels without applying them (default: apply labels)"),
     limit: Optional[int] = typer.Option(50, "--limit", "-l", help="Maximum number of emails to process (default: 50)"),
-    detailed: bool = typer.Option(False, "--detailed", help="Show detailed classification results")
+    detailed: bool = typer.Option(False, "--detailed", help="Show detailed classification results"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed technical information")
 ):
     """Create and apply custom category labels with AI-generated search terms."""
     
     @run_async_command
     async def run():
+        # Set verbose mode based on flag
+        set_verbose_mode(verbose)
+        
         command = CustomLabelCommand()
         await command.initialize()
         
@@ -457,12 +465,12 @@ def create(
         command.format_output(results)
         
         if detailed and results.get('results'):
-            command.console.print("\n[bold]📋 Detailed Results:[/bold]")
+            info("\n📋 Detailed Results:")
             for result in results['results'][:10]:  # Show first 10 detailed
                 if result.get('reasoning'):
-                    command.console.print(f"\n📧 {result.get('subject', 'Unknown')[:50]}...")
-                    command.console.print(f"   Confidence: {result.get('confidence', 0):.1%}")
-                    command.console.print(f"   Reasoning: {result.get('reasoning')}")
+                    info(f"\n📧 {result.get('subject', 'Unknown')[:50]}...")
+                    info(f"   Confidence: {result.get('confidence', 0):.1%}")
+                    info(f"   Reasoning: {result.get('reasoning')}")
         
         return command
     
@@ -481,18 +489,17 @@ def generate_terms(
         command = CustomLabelCommand()
         await command.initialize()
         
-        command.console.print(f"[blue]Generating search terms for category '{category}'...[/blue]")
+        with status_with_spinner(f"Generating search terms for category '{category}'", f"Generated search terms for '{category}'"):
+            search_terms = await command.custom_classifier.label_chain.generate_search_terms(
+                category, context
+            )
         
-        search_terms = await command.custom_classifier.label_chain.generate_search_terms(
-            category, context
-        )
-        
-        command.console.print(f"\n[green]📝 Generated Search Terms for '{category}':[/green]")
+        success(f"📝 Generated Search Terms for '{category}':")
         for i, term in enumerate(search_terms, 1):
-            command.console.print(f"   {i}. {term}")
+            info(f"   {i}. {term}")
         
-        command.console.print(f"\n[blue]💡 Usage Example:[/blue]")
-        command.console.print(f"   email-agent label custom \"{category}\" --search-terms \"{','.join(search_terms)}\"")
+        info(f"\n💡 Usage Example:")
+        info(f"   email-agent label custom \"{category}\" --search-terms \"{','.join(search_terms)}\"")
         
         return command
     
@@ -514,31 +521,31 @@ def analyze(
         analysis = await command.analyze_category_performance(category, sample_size)
         
         if analysis.get("error"):
-            command.console.print(f"[red]Error: {analysis['error']}[/red]")
+            error(f"Error: {analysis['error']}")
             return command
         
         # Display analysis results
-        command.console.print(f"\n[green]📊 Analysis Results for '{category}'[/green]")
+        success(f"📊 Analysis Results for '{category}'")
         
         # Basic statistics
         if analysis.get("email_count"):
-            command.console.print(f"   📧 Analyzed emails: {analysis['email_count']}")
+            info(f"   📧 Analyzed emails: {analysis['email_count']}")
         
         # Sender statistics
         if analysis.get("sender_statistics"):
             stats = analysis["sender_statistics"]
-            command.console.print(f"   👥 Unique senders: {stats.get('total_unique_senders', 0)}")
-            command.console.print(f"   🌐 Unique domains: {stats.get('total_unique_domains', 0)}")
+            info(f"   👥 Unique senders: {stats.get('total_unique_senders', 0)}")
+            info(f"   🌐 Unique domains: {stats.get('total_unique_domains', 0)}")
             
             if stats.get("top_senders"):
-                command.console.print("\n   🔝 Top Senders:")
+                info("\n   🔝 Top Senders:")
                 for sender, count in stats["top_senders"][:5]:
-                    command.console.print(f"      • {sender[:40]}... ({count} emails)")
+                    info(f"      • {sender[:40]}... ({count} emails)")
         
         # Raw analysis from LLM
         if analysis.get("raw_analysis"):
-            command.console.print(f"\n[blue]🤖 AI Analysis:[/blue]")
-            command.console.print(analysis["raw_analysis"])
+            info(f"\n🤖 AI Analysis:")
+            info(analysis["raw_analysis"])
         
         return command
     
@@ -558,16 +565,16 @@ def list_categories():
         stats = await command.custom_classifier.get_category_statistics()
         
         if not categories:
-            command.console.print("[yellow]No custom categories found.[/yellow]")
-            command.console.print("\n[blue]💡 Create a new category with:[/blue]")
-            command.console.print("   email-agent label custom create \"your-category\"")
+            warning("No custom categories found.")
+            info("\n💡 Create a new category with:")
+            info("   email-agent label custom create \"your-category\"")
             return command
         
         # Display overview statistics
-        command.console.print(f"\n[green]📊 Custom Categories Overview[/green]")
-        command.console.print(f"   Total categories: {stats.get('total_categories', 0)}")
-        command.console.print(f"   Active categories: {stats.get('active_categories', 0)}")
-        command.console.print(f"   Total usage: {stats.get('total_usage', 0)} classifications")
+        success("📊 Custom Categories Overview")
+        info(f"   Total categories: {stats.get('total_categories', 0)}")
+        info(f"   Active categories: {stats.get('active_categories', 0)}")
+        info(f"   Total usage: {stats.get('total_usage', 0)} classifications")
         
         # Display categories table
         table = Table(title="Custom Categories")
