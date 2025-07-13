@@ -13,7 +13,130 @@ from src.cli.langchain.agents import EmailAnalysisAgent
 from src.models.email import EmailCategory
 from src.integrations.ollama_client import get_ollama_manager
 
-app = typer.Typer(help="Custom email labeling commands with AI-powered categorization")
+app = typer.Typer(help="Custom email labeling commands with AI-powered categorization", invoke_without_command=True)
+
+
+@app.callback()
+def main_callback(ctx: typer.Context):
+    """Custom category classification with AI-powered search terms."""
+    # If no subcommand is invoked, show helpful guidance
+    if ctx.invoked_subcommand is None:
+        console = typer.get_app_dir("email-agent")  # Get console for consistent formatting
+        from rich.console import Console
+        console = Console()
+        
+        # Display comprehensive usage guide
+        console.print("📖 [bold cyan]Custom Label Command Guide[/bold cyan]\n")
+        
+        console.print("The [bold]email-agent label custom[/bold] command helps you create AI-powered custom categories for your emails.\n")
+        
+        console.print("🎯 [bold yellow]Available Commands:[/bold yellow]\n")
+        
+        # 1. Create command
+        console.print("1. [bold green]Create Custom Categories[/bold green] ([cyan]create[/cyan])\n")
+        console.print("   Create and apply custom labels with AI-generated search terms:\n")
+        
+        console.print("   [dim]# Basic usage - will generate AI search terms for 'programming'[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"programming\"[/bold]\n")
+        
+        console.print("   [dim]# Create with specific search terms[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"work\" --search-terms \"project,meeting,deadline,task\"[/bold]\n")
+        
+        console.print("   [dim]# Advanced usage with parent label[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"travel\" \\[/bold]")
+        console.print("   [bold]  --parent-label \"Personal/Travel\" \\[/bold]")
+        console.print("   [bold]  --search-existing \\[/bold]")
+        console.print("   [bold]  --confidence-threshold 0.8[/bold]\n")
+        
+        console.print("   [dim]# Preview mode (dry run)[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"finance\" --dry-run --detailed[/bold]\n")
+        
+        console.print("   [yellow]Examples:[/yellow]")
+        console.print("   [dim]# AI-powered programming email classification[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"programming\" --limit 100[/bold]\n")
+        
+        console.print("   [dim]# Work emails with custom terms[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"work\" \\[/bold]")
+        console.print("   [bold]    --search-terms \"standup,sprint,jira,github,pull request\" \\[/bold]")
+        console.print("   [bold]    --target \"recent:30days\"[/bold]\n")
+        
+        console.print("   [dim]# Personal finance tracking[/dim]")
+        console.print("   [bold]uv run email-agent label custom create \"finance\" \\[/bold]")
+        console.print("   [bold]    --parent-label \"Personal/Finance\" \\[/bold]")
+        console.print("   [bold]    --search-existing[/bold]\n")
+        
+        # 2. Generate terms command
+        console.print("2. [bold green]Generate Search Terms[/bold green] ([cyan]generate-terms[/cyan])\n")
+        console.print("   Generate AI-powered search terms without classifying emails:\n")
+        
+        console.print("   [dim]# Generate terms for a category[/dim]")
+        console.print("   [bold]uv run email-agent label custom generate-terms \"programming\"[/bold]\n")
+        
+        console.print("   [dim]# Generate with additional context[/dim]")
+        console.print("   [bold]uv run email-agent label custom generate-terms \"travel\" \\[/bold]")
+        console.print("   [bold]    --context \"vacation planning, flight bookings, hotel reservations\"[/bold]\n")
+        
+        # 3. Analyze command
+        console.print("3. [bold green]Analyze Categories[/bold green] ([cyan]analyze[/cyan])\n")
+        console.print("   Analyze existing labeled emails for insights:\n")
+        
+        console.print("   [dim]# Analyze existing labels[/dim]")
+        console.print("   [bold]uv run email-agent label custom analyze \"programming\" --sample-size 50[/bold]\n")
+        
+        # 4. List command
+        console.print("4. [bold green]List Categories[/bold green] ([cyan]list-categories[/cyan])\n")
+        console.print("   View all custom categories and their statistics:\n")
+        
+        console.print("   [bold]uv run email-agent label custom list-categories[/bold]\n")
+        
+        # Common use cases
+        console.print("🎯 [bold yellow]Common Use Cases:[/bold yellow]\n")
+        
+        console.print("   [bold green]Programming/Tech Emails[/bold green]")
+        console.print("   [bold]uv run email-agent label custom create \"programming\" --search-existing --limit 200[/bold]\n")
+        
+        console.print("   [bold green]Work Project Organization[/bold green]")
+        console.print("   [bold]uv run email-agent label custom create \"project-alpha\" \\[/bold]")
+        console.print("   [bold]     --search-terms \"alpha project,milestone,deliverable\" \\[/bold]")
+        console.print("   [bold]     --parent-label \"Work/Projects\"[/bold]\n")
+        
+        console.print("   [bold green]Personal Finance Tracking[/bold green]")
+        console.print("   [bold]uv run email-agent label custom create \"finance\" \\[/bold]")
+        console.print("   [bold]     --parent-label \"Personal\" \\[/bold]")
+        console.print("   [bold]     --search-existing \\[/bold]")
+        console.print("   [bold]     --detailed[/bold]\n")
+        
+        console.print("   [bold green]Travel Planning[/bold green]")
+        console.print("   [bold]uv run email-agent label custom create \"travel\" \\[/bold]")
+        console.print("   [bold]     --search-terms \"booking,flight,hotel,airbnb,vacation\" \\[/bold]")
+        console.print("   [bold]     --confidence-threshold 0.7[/bold]\n")
+        
+        # Key options
+        console.print("⚙️ [bold yellow]Key Options Explained:[/bold yellow]\n")
+        console.print("   • [cyan]--target[/cyan]: Which emails to process (unread, recent:7days, etc.)")
+        console.print("   • [cyan]--search-terms[/cyan]: Manual search terms (if not provided, AI generates them)")
+        console.print("   • [cyan]--search-existing[/cyan]: Search your entire mailbox with generated terms")
+        console.print("   • [cyan]--parent-label[/cyan]: Create hierarchical labels like \"Work/Projects/Alpha\"")
+        console.print("   • [cyan]--confidence-threshold[/cyan]: Minimum confidence (0.0-1.0) for applying labels")
+        console.print("   • [cyan]--dry-run[/cyan]: Preview what would be labeled without actually applying labels")
+        console.print("   • [cyan]--detailed[/cyan]: Show classification reasoning and confidence scores\n")
+        
+        # Quick start
+        console.print("🚀 [bold yellow]Quick Start:[/bold yellow]\n")
+        console.print("   1. [bold]Start simple[/bold] - let AI generate terms:")
+        console.print("      [bold]uv run email-agent label custom create \"programming\" --dry-run[/bold]\n")
+        console.print("   2. [bold]Review the results[/bold] and adjust confidence threshold if needed\n")
+        console.print("   3. [bold]Apply for real[/bold]:")
+        console.print("      [bold]uv run email-agent label custom create \"programming\" --limit 100[/bold]\n")
+        console.print("   4. [bold]Expand to your mailbox[/bold]:")
+        console.print("      [bold]uv run email-agent label custom create \"programming\" --search-existing[/bold]\n")
+        
+        console.print("The AI will automatically generate relevant search terms based on your category name and then classify emails accordingly!\n")
+        
+        console.print("💡 [bold yellow]For detailed help on any command:[/bold yellow]")
+        console.print("   [bold]uv run email-agent label custom [command] --help[/bold]")
+        
+        raise typer.Exit()
 
 
 class CustomLabelCommand(BaseEmailProcessor):
